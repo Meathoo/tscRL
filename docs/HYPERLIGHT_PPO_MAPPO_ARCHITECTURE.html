@@ -1,0 +1,1236 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HyperLight PPO / MAPPO Architecture</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f2;
+      --paper: #ffffff;
+      --ink: #1d2522;
+      --muted: #5d6b66;
+      --line: #d9dfd8;
+      --accent: #0f766e;
+      --accent-2: #b45309;
+      --accent-3: #334155;
+      --soft: #e8f3ef;
+      --soft-2: #f4eadc;
+      --code-bg: #17201d;
+      --code-ink: #e8f3ef;
+      --shadow: 0 18px 45px rgba(31, 41, 35, 0.10);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, "Noto Sans TC", "Microsoft JhengHei", Arial, sans-serif;
+      line-height: 1.72;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      height: 100vh;
+      padding: 28px 22px;
+      border-right: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.76);
+      overflow: auto;
+    }
+
+    aside h2 {
+      margin: 0 0 16px;
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    nav a {
+      display: block;
+      padding: 7px 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    main {
+      width: min(1180px, 100%);
+      padding: 42px 42px 72px;
+    }
+
+    .hero {
+      padding: 44px 46px;
+      background:
+        linear-gradient(135deg, rgba(15, 118, 110, 0.10), rgba(180, 83, 9, 0.10)),
+        var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-weight: 750;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 38px;
+      line-height: 1.16;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      max-width: 880px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    section {
+      margin-top: 34px;
+      padding: 30px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 10px 28px rgba(31, 41, 35, 0.06);
+    }
+
+    h2 {
+      margin: 0 0 18px;
+      font-size: 25px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 26px 0 10px;
+      font-size: 18px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul,
+    ol {
+      margin-top: 8px;
+      padding-left: 22px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    code,
+    kbd {
+      padding: 2px 5px;
+      background: #edf1eb;
+      border: 1px solid #dbe3db;
+      border-radius: 5px;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0;
+      padding: 18px;
+      overflow: auto;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      border-radius: 8px;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      border: 0;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 20px;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: #eef5f2;
+      color: #26342f;
+      font-weight: 750;
+    }
+
+    tbody tr:nth-child(even) td {
+      background: #fbfcfa;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin: 16px 0;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin: 16px 0;
+    }
+
+    .note,
+    .callout,
+    .warn {
+      margin: 16px 0;
+      padding: 15px 16px;
+      border-left: 5px solid var(--accent);
+      background: var(--soft);
+      border-radius: 8px;
+    }
+
+    .warn {
+      border-color: var(--accent-2);
+      background: var(--soft-2);
+    }
+
+    .card {
+      min-width: 0;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfa;
+    }
+
+    .card h3,
+    .card h4 {
+      margin-top: 0;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 14px 0 2px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 4px 10px;
+      color: #123b36;
+      background: #dff0ec;
+      border: 1px solid #bddbd4;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .diagram {
+      margin: 18px 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfa;
+      overflow-x: auto;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(150px, 1fr));
+      align-items: stretch;
+      gap: 12px;
+      min-width: 830px;
+    }
+
+    .flow-node {
+      position: relative;
+      min-height: 94px;
+      padding: 13px 12px;
+      border: 1px solid #cdd8d3;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .flow-node strong {
+      display: block;
+      margin-bottom: 5px;
+      color: #123b36;
+    }
+
+    .flow-node span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .flow-node::after {
+      content: "→";
+      position: absolute;
+      right: -16px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--accent);
+      font-weight: 900;
+      font-size: 20px;
+    }
+
+    .flow-node:last-child::after {
+      content: "";
+    }
+
+    .split-flow {
+      display: grid;
+      grid-template-columns: minmax(190px, 1fr) minmax(190px, 1fr) minmax(190px, 1fr);
+      gap: 12px;
+      min-width: 720px;
+    }
+
+    .branch {
+      padding: 14px;
+      border: 1px solid #cdd8d3;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .branch h4 {
+      margin: 0 0 8px;
+      color: #123b36;
+    }
+
+    .branch .arrow {
+      display: block;
+      margin: 10px 0;
+      color: var(--accent);
+      font-weight: 900;
+    }
+
+    .math {
+      padding: 12px 14px;
+      background: #f3f5f0;
+      border: 1px solid #dfe5dd;
+      border-radius: 8px;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      overflow-x: auto;
+    }
+
+    .source-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin: 16px 0 0;
+    }
+
+    .source-item {
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfa;
+    }
+
+    .source-item strong {
+      display: block;
+      margin-bottom: 5px;
+      color: #123b36;
+    }
+
+    .source-item span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    footer {
+      margin-top: 30px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 940px) {
+      .layout {
+        display: block;
+      }
+
+      aside {
+        position: static;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      main {
+        padding: 26px 16px 56px;
+      }
+
+      .hero {
+        padding: 28px 22px;
+      }
+
+      h1 {
+        font-size: 30px;
+      }
+
+      section {
+        padding: 22px 18px;
+      }
+
+      .grid,
+      .grid-3,
+      .source-list {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <h2>HyperLight PPO / MAPPO</h2>
+      <nav>
+        <a href="#overview">總覽</a>
+        <a href="#files">來源檔案與註冊</a>
+        <a href="#comparison">PPO 與 MAPPO 差異</a>
+        <a href="#runtime">LibSignal 執行流程</a>
+        <a href="#state-action">State / Action / Reward</a>
+        <a href="#embedding">Agent Embedding</a>
+        <a href="#actor">Actor Hypernetwork</a>
+        <a href="#value">Value Hypernetwork</a>
+        <a href="#ppo">PPO / GAE 更新</a>
+        <a href="#configs">目前 Config Snapshot</a>
+        <a href="#checkpoint">Checkpoint</a>
+        <a href="#notes">實作注意事項</a>
+      </nav>
+    </aside>
+
+    <main>
+      <header class="hero">
+        <p class="eyebrow">Architecture document generated from current source tree</p>
+        <h1>HyperLight PPO / MAPPO 詳細架構</h1>
+        <p class="subtitle">
+          本文件整理目前專案中 <code>hyperlight_ppo</code> 與 <code>hyperlight_mappo</code>
+          的實作架構。兩者共用同一個 agent 類別骨架與 PPO 更新流程，差異主要由設定檔控制：
+          PPO 使用 local value input，MAPPO-style 版本打開 centralized critic，讓 value network 在訓練時看到全域交通摘要。
+        </p>
+        <div class="pill-row">
+          <span class="pill">on-policy rollout</span>
+          <span class="pill">GAE</span>
+          <span class="pill">PPO clipped objective</span>
+          <span class="pill">hypernetwork-generated actor</span>
+          <span class="pill">hypernetwork-generated value</span>
+          <span class="pill">centralized critic for MAPPO</span>
+        </div>
+      </header>
+
+      <section id="overview">
+        <h2>1. 總覽</h2>
+        <p>
+          <code>HyperLightPPOAgent</code> 是一個 HyperMARL-style 的 PPO/IPPO 交通號誌控制器。
+          它不是為每個 intersection 建立獨立 PyTorch policy module，而是先為每個 agent 準備一個
+          meta embedding，再透過 hypernetwork 產生該 agent 的 actor 與 value network 參數。
+        </p>
+        <p>
+          <code>HyperLightMAPPOAgent</code> 目前是 <code>HyperLightPPOAgent</code> 的空子類別，只負責註冊
+          <code>hyperlight_mappo</code> 這個 model name。實際 MAPPO-style 行為由
+          <code>configs/tsc/hyperlight_mappo.yml</code> 覆寫設定完成，最重要的是
+          <code>centralized_critic: True</code>。
+        </p>
+
+        <div class="diagram" aria-label="High level architecture flow">
+          <div class="flow">
+            <div class="flow-node">
+              <strong>World / TSCEnv</strong>
+              <span>CityFlow 或 SUMO world 產生 lane feature、phase 與 reward。</span>
+            </div>
+            <div class="flow-node">
+              <strong>State Builder</strong>
+              <span>observation 正規化、padding，再串接 current phase。</span>
+            </div>
+            <div class="flow-node">
+              <strong>Agent Meta</strong>
+              <span>one-hot 或 learned embedding，shape 為 [B, N, E]。</span>
+            </div>
+            <div class="flow-node">
+              <strong>Hypernetworks</strong>
+              <span>產生 actor theta 與 value theta，每個 intersection 一組參數。</span>
+            </div>
+            <div class="flow-node">
+              <strong>PPO Update</strong>
+              <span>rollout buffer、GAE、clipped policy loss、value loss、entropy bonus。</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="note">
+          <strong>目前程式碼的核心特徵：</strong>
+          actor 永遠只吃 local state，所以執行時是 decentralized execution；
+          MAPPO-style 的集中化只發生在 value input，也就是 centralized training 的 critic/value 分支。
+        </div>
+      </section>
+
+      <section id="files">
+        <h2>2. 來源檔案與註冊</h2>
+        <p>目前 PPO/MAPPO 分支主要由以下檔案組成：</p>
+        <div class="source-list">
+          <div class="source-item">
+            <strong><code>agent/hyperlight_ppo.py</code></strong>
+            <span>核心 agent。定義 <code>HyperLightPPOAgent</code> 與 <code>HyperLightMAPPOAgent</code>。</span>
+          </div>
+          <div class="source-item">
+            <strong><code>agent/actor.py</code></strong>
+            <span>定義 frozen template actor <code>BaseActor</code>，供 hypernetwork 取得參數 layout。</span>
+          </div>
+          <div class="source-item">
+            <strong><code>agent/hypernetwork.py</code></strong>
+            <span>提供 <code>LinearHyperNetwork</code>、<code>MLPHyperNetwork</code> 與 <code>build_hypernetwork()</code>。</span>
+          </div>
+          <div class="source-item">
+            <strong><code>configs/tsc/hyperlight_ppo.yml</code></strong>
+            <span>PPO 預設設定。local critic、rollout length、PPO loss 超參數都在這裡。</span>
+          </div>
+          <div class="source-item">
+            <strong><code>configs/tsc/hyperlight_mappo.yml</code></strong>
+            <span>繼承 PPO 設定，只覆寫 model name 與 centralized critic 設定。</span>
+          </div>
+          <div class="source-item">
+            <strong><code>trainer/tsc_trainer.py</code></strong>
+            <span>呼叫 <code>get_action()</code>、<code>remember()</code>、<code>train()</code> 的 LibSignal TSC 訓練迴圈。</span>
+          </div>
+        </div>
+
+        <h3>Model Registry</h3>
+        <pre><code class="language-python">@Registry.register_model('hyperlight_ppo')
+class HyperLightPPOAgent(RLAgent):
+    ...
+
+@Registry.register_model('hyperlight_mappo')
+class HyperLightMAPPOAgent(HyperLightPPOAgent):
+    pass</code></pre>
+
+        <p>
+          <code>agent/__init__.py</code> 會 import 這兩個類別，因此執行 <code>run.py</code> 時，
+          只要命令列指定 <code>--agent hyperlight_ppo</code> 或 <code>--agent hyperlight_mappo</code>，
+          registry 就能建立正確 agent。
+        </p>
+      </section>
+
+      <section id="comparison">
+        <h2>3. PPO 與 MAPPO 差異</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>項目</th>
+              <th><code>hyperlight_ppo</code></th>
+              <th><code>hyperlight_mappo</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Python 類別</td>
+              <td><code>HyperLightPPOAgent</code></td>
+              <td><code>HyperLightMAPPOAgent(HyperLightPPOAgent)</code></td>
+            </tr>
+            <tr>
+              <td>Policy / actor input</td>
+              <td>local state <code>s_i</code></td>
+              <td>local state <code>s_i</code></td>
+            </tr>
+            <tr>
+              <td>Value input</td>
+              <td>local state <code>s_i</code></td>
+              <td>local state + global context，或 full concat global state</td>
+            </tr>
+            <tr>
+              <td><code>centralized_critic</code></td>
+              <td><code>False</code></td>
+              <td><code>True</code></td>
+            </tr>
+            <tr>
+              <td>預設 centralized mode</td>
+              <td>設定存在但不啟用：<code>pooled</code></td>
+              <td><code>pooled</code></td>
+            </tr>
+            <tr>
+              <td>Value hidden dims</td>
+              <td><code>[64, 64]</code></td>
+              <td><code>[128, 64]</code></td>
+            </tr>
+            <tr>
+              <td>Execution</td>
+              <td>decentralized action selection</td>
+              <td>decentralized action selection</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="warn">
+          <strong>命名說明：</strong>
+          目前 <code>hyperlight_mappo</code> 是 MAPPO-style，而不是另一套獨立演算法實作。
+          它沿用 PPO rollout、GAE 與 clipped objective，只把 value 分支改成 centralized critic。
+        </div>
+      </section>
+
+      <section id="runtime">
+        <h2>4. LibSignal 執行流程</h2>
+        <p>
+          <code>TSCTrainer.create_agents()</code> 會先建立一個 agent，該 agent 的
+          <code>sub_agents = len(world.intersections)</code>，因此在一般 TSC 設定下，
+          一個 <code>HyperLightPPOAgent</code> 實例會控制整張 road network 的所有 intersections。
+        </p>
+
+        <div class="diagram">
+          <div class="flow">
+            <div class="flow-node">
+              <strong>reset</strong>
+              <span><code>env.reset()</code> 後 agent 重建 generators 與 cache。</span>
+            </div>
+            <div class="flow-node">
+              <strong>observe</strong>
+              <span><code>get_ob()</code> 與 <code>get_phase()</code> 取得 [N, O] 和 [N]。</span>
+            </div>
+            <div class="flow-node">
+              <strong>act</strong>
+              <span><code>get_action()</code> 回傳每個 intersection 的 phase index。</span>
+            </div>
+            <div class="flow-node">
+              <strong>step</strong>
+              <span><code>env.step(actions.flatten())</code> 推進 <code>action_interval</code> 秒。</span>
+            </div>
+            <div class="flow-node">
+              <strong>learn</strong>
+              <span><code>remember()</code> 存 rollout，<code>train()</code> 滿 rollout 後更新。</span>
+            </div>
+          </div>
+        </div>
+
+        <h3>訓練迴圈細節</h3>
+        <ol>
+          <li>每個 episode 開始時，<code>metric.clear()</code>、<code>env.reset()</code>、<code>agent.reset()</code>。</li>
+          <li>每隔 <code>action_interval</code> 才決策一次，預設為 10 simulator steps。</li>
+          <li><code>learning_start: -1</code>，所以從第一個 decision 開始就會使用 policy，而不是先 random warmup。</li>
+          <li><code>get_action()</code> 會同步 cache action probability 與 value，<code>get_action_prob()</code> 隨後取出同一份 old policy probability。</li>
+          <li><code>remember()</code> 將 transition 放進 on-policy rollout buffer。</li>
+          <li><code>update_model_rate: 1</code> 代表 trainer 每個 decision 都呼叫 <code>train()</code>，但 agent 只有累積到 <code>ppo_rollout_steps</code> 才真的更新。</li>
+        </ol>
+
+        <pre><code class="language-text">per decision:
+  phase_t = agent.get_phase()
+  action_t = agent.get_action(obs_t, phase_t)
+  old_prob_t = agent.get_action_prob(obs_t, phase_t)
+  obs_{t+1}, reward_t = env.step(action_t) repeated action_interval times
+  phase_{t+1} = agent.get_phase()
+  agent.remember(obs_t, phase_t, action_t, old_prob_t, reward_t, obs_{t+1}, phase_{t+1}, done)
+  loss = agent.train()</code></pre>
+      </section>
+
+      <section id="state-action">
+        <h2>5. State / Action / Reward</h2>
+        <p>本節使用以下符號：</p>
+        <table>
+          <thead>
+            <tr>
+              <th>符號</th>
+              <th>意義</th>
+              <th>目前來源</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>N</code></td>
+              <td>intersection / sub-agent 數量</td>
+              <td><code>len(world.intersections)</code></td>
+            </tr>
+            <tr>
+              <td><code>A</code></td>
+              <td>最大 phase 數量，也是 actor output dim</td>
+              <td><code>max(len(inter.phases))</code></td>
+            </tr>
+            <tr>
+              <td><code>O</code></td>
+              <td>padding 後的 observation length</td>
+              <td>所有 intersection 的 <code>LaneVehicleGenerator.ob_length</code> 最大值</td>
+            </tr>
+            <tr>
+              <td><code>S</code></td>
+              <td>final state dim</td>
+              <td><code>O + A</code>，當 <code>phase=True</code> 且 <code>one_hot=True</code></td>
+            </tr>
+            <tr>
+              <td><code>B</code></td>
+              <td>batch 或 rollout step 數</td>
+              <td>train 時的 sampled rollout/minibatch length</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Observation</h3>
+        <p>
+          <code>get_ob()</code> 對每個 intersection 建立 <code>LaneVehicleGenerator</code>，
+          預設 features 是 <code>lane_count</code> 與 <code>lane_waiting_count</code>。
+          產生的數值會除以 <code>vehicle_max</code>，預設 <code>50</code>。如果不同 intersection 的 lane 數不同，
+          則短的 observation 會 zero-pad，長的會 truncate 到 <code>O</code>。
+        </p>
+        <pre><code class="language-text">raw_obs_i = LaneVehicleGenerator(...).generate()
+obs_i = raw_obs_i / vehicle_max
+obs_i = pad_or_truncate(obs_i, O)
+obs shape = [N, O]</code></pre>
+
+        <h3>Phase Feature</h3>
+        <p>
+          <code>get_phase()</code> 使用 <code>IntersectionPhaseGenerator</code> 讀取 current phase，
+          並把 phase index clamp 在該 intersection 合法 phase 範圍內。預設 <code>one_hot=True</code>，
+          因此 phase 會轉成長度 <code>A</code> 的 one-hot 向量，再接到 observation 後面。
+        </p>
+        <pre><code class="language-text">phase_onehot shape = [N, A]
+state = concat(obs, phase_onehot, dim=-1)
+state shape = [N, S]</code></pre>
+
+        <h3>Action Mask</h3>
+        <p>
+          因為不同 intersection 的 phase 數可能不同，agent 會建立 <code>action_mask</code>，shape 為
+          <code>[N, A]</code>。有效 phase 是 <code>True</code>，無效 phase 是 <code>False</code>。
+          policy logits 會對無效 phase 填入 <code>-1e9</code>，sample 時也只會在合法範圍內抽樣。
+        </p>
+        <pre><code class="language-text">logits = logits.masked_fill(~action_mask[None, :, :], -1e9)
+action_i ∈ {0, ..., phase_lengths[i] - 1}</code></pre>
+
+        <h3>Reward</h3>
+        <p>
+          reward generator 預設讀取 <code>lane_waiting_count</code>，<code>average='all'</code>，
+          並設定 <code>negative=True</code>。因此每個 intersection 的 reward 是負的平均等待車輛數。
+          進入 PPO tensor 時會再乘上 <code>reward_scale</code>，目前預設為 <code>0.05</code>。
+        </p>
+      </section>
+
+      <section id="embedding">
+        <h2>6. Agent Embedding 與 Meta Input</h2>
+        <p>
+          PPO/MAPPO 分支沒有使用 <code>hyperlight.py</code> 裡的 positional encoding 與 system <code>mu</code>。
+          目前這條分支採用較接近公開 HyperMARL PPO/IPPO/MAPPO 程式的 agent embedding conditioning。
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>模式</th>
+              <th>設定</th>
+              <th>meta dim</th>
+              <th>是否可訓練</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>one-hot</td>
+              <td><code>agent_embedding_mode: one_hot</code></td>
+              <td><code>N</code></td>
+              <td>否，使用 <code>torch.eye(N)</code></td>
+            </tr>
+            <tr>
+              <td>learned</td>
+              <td><code>agent_embedding_mode: learned</code></td>
+              <td><code>agent_embedding_dim</code></td>
+              <td>是，<code>nn.Parameter[N, E]</code>，orthogonal init</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <pre><code class="language-text">agent_embeddings shape = [N, E]
+meta = agent_embeddings[None, :, :].expand(B, N, E)
+meta shape = [B, N, E]</code></pre>
+
+        <div class="note">
+          <strong>目前預設：</strong>
+          <code>agent_embedding_mode: one_hot</code>。這代表 hypernetwork input dim 會隨地圖 intersection 數量
+          <code>N</code> 改變，對同一張地圖訓練很直接；若要跨不同規模地圖重用模型，通常需要額外設計 embedding 或 meta 描述。
+        </div>
+      </section>
+
+      <section id="actor">
+        <h2>7. Actor Hypernetwork</h2>
+        <p>
+          actor 使用 <code>BaseActor</code> 作為 template，但 <code>BaseActor</code> 的參數本身全部
+          <code>requires_grad = False</code>。它的主要用途是提供 layer name、shape 與 flattened parameter layout。
+          真正訓練的是 <code>actor_hypernet</code>，它根據每個 agent 的 meta embedding 產生 actor 權重。
+        </p>
+
+        <div class="diagram">
+          <div class="split-flow">
+            <div class="branch">
+              <h4>Template Actor</h4>
+              <code>BaseActor(S, H1, H2, A)</code>
+              <span class="arrow">↓ layout only</span>
+              <code>fc1, fc2, fc3 weights/biases</code>
+            </div>
+            <div class="branch">
+              <h4>Actor Hypernetwork</h4>
+              <code>meta_i [E]</code>
+              <span class="arrow">↓</span>
+              <code>theta_pi_i [P_actor]</code>
+            </div>
+            <div class="branch">
+              <h4>Generated Policy</h4>
+              <code>state_i [S]</code>
+              <span class="arrow">↓</span>
+              <code>masked logits_i [A]</code>
+            </div>
+          </div>
+        </div>
+
+        <h3>BaseActor 結構</h3>
+        <pre><code class="language-text">state_i [S]
+  -> Linear(S, actor_hidden1)
+  -> ReLU
+  -> Linear(actor_hidden1, actor_hidden2)
+  -> ReLU
+  -> Linear(actor_hidden2, A)
+  -> logits_i [A]</code></pre>
+
+        <h3>Actor Parameter Dim</h3>
+        <p>flattened actor 參數總長度為：</p>
+        <div class="math">
+          P_actor = H1*S + H1 + H2*H1 + H2 + A*H2 + A
+        </div>
+        <p>
+          預設 <code>actor_hidden1=64</code>、<code>actor_hidden2=64</code>。<code>S</code> 與 <code>A</code>
+          由 road network 與 phase 設定決定。
+        </p>
+
+        <h3>Forward 實作</h3>
+        <p>
+          <code>_actor_forward(state_tensor, theta)</code> 會把 flattened <code>theta</code>
+          依照 <code>actor_layout</code> 切成每層 weight/bias，然後用 <code>torch.einsum</code>
+          做 batched per-agent linear layer。
+        </p>
+        <pre><code class="language-text">state_tensor shape = [B, N, S]
+actor_theta shape = [B, N, P_actor]
+logits shape = [B, N, A]</code></pre>
+      </section>
+
+      <section id="value">
+        <h2>8. Value Hypernetwork</h2>
+        <p>
+          value network 也不是固定 module，而是由 <code>value_hypernet</code> 產生每個 agent 的 value network 參數。
+          這個分支是 <code>hyperlight_ppo</code> 與 <code>hyperlight_mappo</code> 的主要架構差異。
+        </p>
+
+        <h3>Local Value Input: hyperlight_ppo</h3>
+        <pre><code class="language-text">centralized_critic = False
+value_input_i = state_i
+value_input_dim = S</code></pre>
+
+        <h3>Pooled Centralized Value Input: hyperlight_mappo 預設</h3>
+        <p>
+          pooled mode 會先從所有 intersections 的 state 計算四種全域統計：mean、std、max、min。
+          每個 agent 的 value network 都會收到自己的 local state，加上同一份 global context。
+        </p>
+        <pre><code class="language-text">global_mean = mean(states, dim=N)  # [B, 1, S]
+global_std  = std(states, dim=N)   # [B, 1, S]
+global_max  = max(states, dim=N)   # [B, 1, S]
+global_min  = min(states, dim=N)   # [B, 1, S]
+
+global_context = concat(mean, std, max, min)  # [B, 1, 4S]
+global_context = expand(global_context, N)    # [B, N, 4S]
+value_input_i = concat(state_i, global_context_i)
+value_input_dim = 5S</code></pre>
+
+        <h3>Concat Centralized Value Input: 可選</h3>
+        <pre><code class="language-text">centralized_critic_mode = concat
+global_state = reshape(states, [B, N*S])
+value_input_i = global_state
+value_input_dim = N*S</code></pre>
+
+        <div class="warn">
+          <strong>大型路網建議使用 pooled：</strong>
+          <code>concat</code> 會讓 value input dim 隨 <code>N*S</code> 線性放大，
+          進而讓 hypernetwork 需要產生更大的 value network 參數，對大地圖可能很重。
+        </div>
+
+        <h3>Value Network Layout</h3>
+        <p>
+          value network dims 由 <code>[value_input_dim] + value_hidden + [1]</code> 組成。
+          PPO 預設 <code>value_hidden: [64, 64]</code>；MAPPO 覆寫為 <code>[128, 64]</code>。
+        </p>
+        <pre><code class="language-text">value_input shape = [B, N, value_input_dim]
+value_theta shape = [B, N, P_value]
+values shape = [B, N]</code></pre>
+      </section>
+
+      <section id="ppo">
+        <h2>9. PPO / GAE 更新流程</h2>
+        <p>
+          這條分支是 on-policy PPO。transition 先進入 <code>rollout_buffer</code>，
+          當 <code>_transitions_since_update >= ppo_rollout_steps</code> 時，
+          <code>train()</code> 會取出整段 rollout、清空 buffer，接著計算 GAE 與 PPO loss。
+        </p>
+
+        <h3>Rollout Buffer 內容</h3>
+        <pre><code class="language-text">(
+  state,        # [N, S]
+  next_state,   # [N, S]
+  actions,      # [N]
+  rewards,      # [N]
+  done_arr,     # [N]
+  old_log_prob, # [N]
+  old_value     # [N]
+)</code></pre>
+
+        <h3>GAE</h3>
+        <p>
+          <code>_compute_gae()</code> 使用 rollout 中保存的 <code>old_values</code>，
+          並用最後一個 <code>next_state</code> 估計 bootstrap value。
+        </p>
+        <div class="math">
+          delta_t = r_t + gamma * V(s_{t+1}) * (1 - done_t) - V(s_t)<br>
+          A_t = delta_t + gamma * lambda * (1 - done_t) * A_{t+1}<br>
+          returns_t = A_t + V(s_t)
+        </div>
+        <p>
+          預設會 normalize advantages：
+          <code>(advantages - mean) / (std + 1e-8)</code>。
+        </p>
+
+        <h3>PPO Loss</h3>
+        <p>
+          對每個 minibatch，agent 重新跑一次 current policy/value，取得新的 log probability 與 value。
+        </p>
+        <div class="math">
+          ratio = exp(new_log_prob - old_log_prob)<br>
+          policy_loss = -mean(min(ratio * A, clip(ratio, 1-eps, 1+eps) * A))<br>
+          value_loss = 0.5 * clipped_or_plain_mse(value, returns)<br>
+          loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
+        </div>
+
+        <h3>Minibatch 切法</h3>
+        <p>
+          buffer 裡的主要時間維度是 decision step。程式會先決定每個 minibatch 包含幾個 rollout steps：
+        </p>
+        <pre><code class="language-text">step_batch_size = min(num_steps, ppo_minibatch_size // N)</code></pre>
+        <p>
+          這樣可讓展開後的總樣本數約等於 <code>ppo_minibatch_size</code>，也就是
+          <code>step_batch_size * N</code> 個 agent-time samples。
+        </p>
+
+        <h3>Optimizer</h3>
+        <p>optimizer 只更新下列參數：</p>
+        <ul>
+          <li><code>actor_hypernet.parameters()</code></li>
+          <li><code>value_hypernet.parameters()</code></li>
+          <li>若 <code>agent_embedding_mode=learned</code>，也更新 <code>agent_embeddings</code></li>
+        </ul>
+        <p>
+          <code>BaseActor</code> 不更新，因為它只是 layout template。每次 backward 後會使用
+          <code>clip_grad_norm_</code>，預設 <code>grad_clip=0.5</code>。
+        </p>
+      </section>
+
+      <section id="configs">
+        <h2>10. 目前 Config Snapshot</h2>
+        <h3><code>configs/tsc/hyperlight_ppo.yml</code></h3>
+        <table>
+          <thead>
+            <tr>
+              <th>區塊</th>
+              <th>Key</th>
+              <th>目前值</th>
+              <th>作用</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>model</td>
+              <td><code>state_features</code></td>
+              <td><code>["lane_count", "lane_waiting_count"]</code></td>
+              <td>observation feature 來源</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>phase</code>, <code>one_hot</code></td>
+              <td><code>True</code>, <code>True</code></td>
+              <td>將 current phase 以 one-hot 接到 state</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>vehicle_max</code></td>
+              <td><code>50</code></td>
+              <td>traffic feature normalization divisor</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>learning_rate</code>, <code>adam_eps</code></td>
+              <td><code>0.0003</code>, <code>0.00001</code></td>
+              <td>Adam optimizer 參數</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>gamma</code>, <code>gae_lambda</code></td>
+              <td><code>0.99</code>, <code>0.95</code></td>
+              <td>return 與 GAE 折扣</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>clip_eps</code>, <code>clip_vf</code></td>
+              <td><code>0.2</code>, <code>0.2</code></td>
+              <td>PPO policy ratio 與 value clipping</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>entropy_coef</code>, <code>value_coef</code></td>
+              <td><code>0.01</code>, <code>0.5</code></td>
+              <td>entropy bonus 與 value loss 權重</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>reward_scale</code></td>
+              <td><code>0.05</code></td>
+              <td>reward tensor 進 loss 前的縮放</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>ppo_epochs</code>, <code>ppo_rollout_steps</code></td>
+              <td><code>4</code>, <code>360</code></td>
+              <td>每段 rollout 更新回合數與 rollout 長度</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>ppo_minibatch_size</code></td>
+              <td><code>2048</code></td>
+              <td>展開 agent-time 後的目標 minibatch 大小</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>centralized_critic</code></td>
+              <td><code>False</code></td>
+              <td>PPO 預設 local value input</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>agent_embedding_mode</code></td>
+              <td><code>one_hot</code></td>
+              <td>hypernetwork 的 agent conditioning</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>actor_hypernet_type</code>, <code>value_hypernet_type</code></td>
+              <td><code>mlp</code>, <code>mlp</code></td>
+              <td>actor/value parameter generator 類型</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>hyper_hidden</code>, <code>value_hyper_hidden</code></td>
+              <td><code>[64]</code>, <code>[64]</code></td>
+              <td>hypernetwork hidden dims</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>actor_hidden1</code>, <code>actor_hidden2</code></td>
+              <td><code>64</code>, <code>64</code></td>
+              <td>generated actor MLP hidden dims</td>
+            </tr>
+            <tr>
+              <td>model</td>
+              <td><code>value_hidden</code></td>
+              <td><code>[64, 64]</code></td>
+              <td>generated value MLP hidden dims</td>
+            </tr>
+            <tr>
+              <td>trainer</td>
+              <td><code>learning_start</code></td>
+              <td><code>-1</code></td>
+              <td>立即使用 policy 決策</td>
+            </tr>
+            <tr>
+              <td>trainer</td>
+              <td><code>buffer_size</code></td>
+              <td><code>1000</code></td>
+              <td>rollout deque 最大長度</td>
+            </tr>
+            <tr>
+              <td>trainer</td>
+              <td><code>steps</code>, <code>action_interval</code>, <code>episodes</code></td>
+              <td><code>3600</code>, <code>10</code>, <code>200</code></td>
+              <td>每 episode 模擬長度、決策間隔、總 episode</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3><code>configs/tsc/hyperlight_mappo.yml</code></h3>
+        <p>MAPPO 設定繼承 <code>hyperlight_ppo.yml</code>，只覆寫以下內容：</p>
+        <pre><code class="language-yaml">includes:
+  - configs/tsc/hyperlight_ppo.yml
+
+model:
+  name: hyperlight_mappo
+  centralized_critic: True
+  centralized_critic_mode: pooled
+  value_hidden: [128, 64]
+
+trainer:
+  buffer_size: 1000</code></pre>
+
+        <h3>執行命令</h3>
+        <pre><code class="language-bash">python run.py --task tsc --agent hyperlight_ppo --world cityflow --network cityflow7x28 --prefix hyperlight_ppo --ngpu 0
+
+python run.py --task tsc --agent hyperlight_mappo --world cityflow --network cityflow7x28 --prefix hyperlight_mappo --ngpu 0</code></pre>
+      </section>
+
+      <section id="checkpoint">
+        <h2>11. Checkpoint 儲存與載入</h2>
+        <p>
+          <code>save_model(e)</code> 會在 logger path 的 <code>model</code> 資料夾下存成
+          <code>{e}_{rank}.pt</code>。目前 payload 包含：
+        </p>
+        <ul>
+          <li><code>actor_hypernet.state_dict()</code></li>
+          <li><code>value_hypernet.state_dict()</code></li>
+          <li><code>optimizer.state_dict()</code></li>
+          <li><code>embedding_mode</code></li>
+          <li><code>agent_embeddings</code> 的 tensor copy</li>
+        </ul>
+        <p>
+          <code>load_model(e)</code> 會恢復 actor/value hypernet，若目前是 learned embedding 且 checkpoint 有
+          <code>agent_embeddings</code>，也會把 embedding 載回目前 device。optimizer state 若存在也會載入。
+        </p>
+      </section>
+
+      <section id="notes">
+        <h2>12. 實作注意事項</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>MAPPO 的 centralized critic 只影響 value</h3>
+            <p>
+              <code>_policy_value()</code> 中 actor logits 一律由 local state 產生。
+              <code>centralized_critic</code> 只改變 <code>_value_input()</code> 的輸入。
+            </p>
+          </div>
+          <div class="card">
+            <h3>Action space 取最大 phase 數</h3>
+            <p>
+              <code>A = max(phase_lengths)</code>，較少 phase 的 intersection 靠
+              <code>action_mask</code> 避免選到非法 action。
+            </p>
+          </div>
+          <div class="card">
+            <h3>rollout buffer 是 on-policy 用法</h3>
+            <p>
+              雖然名稱也指派給 <code>replay_buffer</code>，但 <code>train()</code> 會在每次 PPO 更新前取出並清空整段 rollout。
+            </p>
+          </div>
+          <div class="card">
+            <h3>old log probability 來自 cache</h3>
+            <p>
+              <code>get_action()</code> 先 cache probability，隨後 <code>get_action_prob()</code> 取回，確保
+              <code>remember()</code> 保存的是 action 當下的 old policy probability。
+            </p>
+          </div>
+          <div class="card">
+            <h3>target network 無作用</h3>
+            <p>
+              <code>update_target_network()</code> 在 PPO/MAPPO 分支是 <code>pass</code>。
+              trainer 仍會照通用流程呼叫，但不會更新任何 target module。
+            </p>
+          </div>
+          <div class="card">
+            <h3>大型地圖 value input 要留意</h3>
+            <p>
+              <code>centralized_critic_mode: concat</code> 的 <code>value_input_dim = N*S</code>。
+              若 <code>N</code> 很大，建議維持目前預設 <code>pooled</code>。
+            </p>
+          </div>
+        </div>
+
+        <h3>快速讀程式索引</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>想看內容</th>
+              <th>檔案與函式</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>初始化、config 解析、module 建立</td>
+              <td><code>agent/hyperlight_ppo.py :: HyperLightPPOAgent.__init__</code></td>
+            </tr>
+            <tr>
+              <td>observation / reward / phase generator</td>
+              <td><code>_build_generators()</code>、<code>get_ob()</code>、<code>get_reward()</code>、<code>get_phase()</code></td>
+            </tr>
+            <tr>
+              <td>actor generated forward</td>
+              <td><code>_actor_forward()</code></td>
+            </tr>
+            <tr>
+              <td>centralized critic input</td>
+              <td><code>_value_input()</code></td>
+            </tr>
+            <tr>
+              <td>policy/value 一次 forward</td>
+              <td><code>_policy_value()</code></td>
+            </tr>
+            <tr>
+              <td>transition 保存</td>
+              <td><code>remember()</code></td>
+            </tr>
+            <tr>
+              <td>GAE 與 PPO 更新</td>
+              <td><code>_compute_gae()</code>、<code>train()</code></td>
+            </tr>
+            <tr>
+              <td>trainer 如何呼叫 agent</td>
+              <td><code>trainer/tsc_trainer.py :: train()</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <footer>
+        文件依據目前工作目錄中的程式碼與設定檔整理：<code>agent/hyperlight_ppo.py</code>、
+        <code>agent/actor.py</code>、<code>agent/hypernetwork.py</code>、
+        <code>configs/tsc/hyperlight_ppo.yml</code>、<code>configs/tsc/hyperlight_mappo.yml</code>、
+        <code>trainer/tsc_trainer.py</code>。
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

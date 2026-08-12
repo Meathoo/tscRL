@@ -1,0 +1,183 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from .hypernetwork import build_generated_param_scaler, build_hypernetwork
+
+
+class QNetwork(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dims):
+        super().__init__()
+        dims = [state_dim + action_dim] + list(hidden_dims) + [1]
+        layers = []
+        for i in range(len(dims) - 2):
+            layers.append(nn.Linear(dims[i], dims[i + 1]))
+            layers.append(nn.ReLU())
+        layers.append(nn.Linear(dims[-2], dims[-1]))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, state, action):
+        return self.net(torch.cat([state, action], dim=-1))
+
+
+class TwinCritic(nn.Module):
+    """
+    TD3-style twin critics to reduce overestimation.
+    """
+
+    def __init__(self, state_dim, action_dim, hidden_dims=(256, 256)):
+        super().__init__()
+        self.q1_net = QNetwork(state_dim, action_dim, hidden_dims)
+        self.q2_net = QNetwork(state_dim, action_dim, hidden_dims)
+
+    def forward(self, state, action):
+        return self.q1_net(state, action), self.q2_net(state, action)
+
+    def q1(self, state, action):
+        return self.q1_net(state, action)
+
+
+class HyperQNetwork(nn.Module):
+    """
+    Local Q network whose weights are generated from agent metadata.
+    """
+
+    def __init__(
+        self,
+        state_dim,
+        action_dim,
+        meta_dim,
+        hidden_dims,
+        hyper_hidden,
+        dropout=0.0,
+        chunk_size=None,
+        hypernet_type='mlp',
+        rf_config=None,
+        rf_output_gain_key='hyper_rf_critic_output_gain',
+    ):
+        super().__init__()
+        self.input_dim = state_dim + action_dim
+        self.dims = [self.input_dim] + list(hidden_dims) + [1]
+        self.layout = self._build_layout()
+        self.param_dim = self.layout[-1][-1]
+        self.hypernet = build_hypernetwork(
+            hypernet_type,
+            meta_dim,
+            hyper_hidden,
+            self.param_dim,
+            dropout=dropout,
+        )
+        self.rf_scaler = build_generated_param_scaler(
+            rf_config or {},
+            output_gain_key=rf_output_gain_key,
+            default_output_gain=1.0,
+        )
+        self.chunk_size = chunk_size
+
+    def _build_layout(self):
+        layout = []
+        offset = 0
+        for in_dim, out_dim in zip(self.dims[:-1], self.dims[1:]):
+            weight_numel = out_dim * in_dim
+            bias_numel = out_dim
+            layout.append((out_dim, in_dim, offset, offset + weight_numel, offset + weight_numel + bias_numel))
+            offset += weight_numel + bias_numel
+        return layout
+
+    def _forward_flat(self, x, meta):
+        theta = self.hypernet(meta)
+
+        layer_count = len(self.layout)
+        for layer_idx, (out_dim, in_dim, weight_start, bias_start, end) in enumerate(self.layout):
+            weight = theta[..., weight_start:bias_start].view(theta.shape[0], out_dim, in_dim)
+            bias = theta[..., bias_start:end].view(theta.shape[0], out_dim)
+            weight = self.rf_scaler.scale_weight(weight, out_dim, in_dim, layer_idx, layer_count)
+            bias = self.rf_scaler.scale_bias(bias, in_dim, layer_idx, layer_count)
+            x = torch.einsum('mi,moi->mo', x, weight) + bias
+            if layer_idx < len(self.layout) - 1:
+                x = F.relu(x)
+
+        return x
+
+    def forward(self, state, action, meta):
+        # state/action/meta: [B, N, D]. Each node receives its own generated Q network.
+        batch_size, n_agents, _ = state.shape
+        x = torch.cat([state, action], dim=-1)
+
+        if not self.chunk_size or self.chunk_size <= 0:
+            theta = self.hypernet(meta)
+
+            layer_count = len(self.layout)
+            for layer_idx, (out_dim, in_dim, weight_start, bias_start, end) in enumerate(self.layout):
+                weight = theta[..., weight_start:bias_start].view(*theta.shape[:-1], out_dim, in_dim)
+                bias = theta[..., bias_start:end].view(*theta.shape[:-1], out_dim)
+                weight = self.rf_scaler.scale_weight(weight, out_dim, in_dim, layer_idx, layer_count)
+                bias = self.rf_scaler.scale_bias(bias, in_dim, layer_idx, layer_count)
+                x = torch.einsum('bni,bnoi->bno', x, weight) + bias
+                if layer_idx < len(self.layout) - 1:
+                    x = F.relu(x)
+
+            return x
+
+        x_flat = x.reshape(batch_size * n_agents, -1)
+        meta_flat = meta.reshape(batch_size * n_agents, -1)
+        outputs = []
+        for start in range(0, x_flat.shape[0], int(self.chunk_size)):
+            end = min(start + int(self.chunk_size), x_flat.shape[0])
+            outputs.append(self._forward_flat(x_flat[start:end], meta_flat[start:end]))
+        return torch.cat(outputs, dim=0).view(batch_size, n_agents, -1)
+
+
+class HyperTwinCritic(nn.Module):
+    """
+    HypeMARL-style twin local critics generated by two critic hypernetworks.
+    """
+
+    def __init__(
+        self,
+        state_dim,
+        action_dim,
+        meta_dim,
+        hidden_dims=(256,),
+        hyper_hidden=(256, 512),
+        dropout=0.0,
+        chunk_size=None,
+        hypernet_type='mlp',
+        rf_config=None,
+    ):
+        super().__init__()
+        self.q1_net = HyperQNetwork(
+            state_dim,
+            action_dim,
+            meta_dim,
+            hidden_dims,
+            hyper_hidden,
+            dropout=dropout,
+            chunk_size=chunk_size,
+            hypernet_type=hypernet_type,
+            rf_config=rf_config,
+            rf_output_gain_key='hyper_rf_critic_output_gain',
+        )
+        self.q2_net = HyperQNetwork(
+            state_dim,
+            action_dim,
+            meta_dim,
+            hidden_dims,
+            hyper_hidden,
+            dropout=dropout,
+            chunk_size=chunk_size,
+            hypernet_type=hypernet_type,
+            rf_config=rf_config,
+            rf_output_gain_key='hyper_rf_critic_output_gain',
+        )
+
+    def forward(self, state, action, meta, reduce=True):
+        q1 = self.q1_net(state, action, meta)
+        q2 = self.q2_net(state, action, meta)
+        if reduce:
+            return q1.mean(dim=1), q2.mean(dim=1)
+        return q1, q2
+
+    def q1(self, state, action, meta, reduce=True):
+        q1 = self.q1_net(state, action, meta)
+        return q1.mean(dim=1) if reduce else q1

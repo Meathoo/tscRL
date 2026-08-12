@@ -1,0 +1,743 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="LibSignal HyperIRU：HyperLight-FiLM 與 IRU actor 的現行實作架構說明">
+  <title>HyperIRU Architecture｜LibSignal</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --paper: #ffffff;
+      --ink: #182033;
+      --muted: #5d6679;
+      --line: #dce2ee;
+      --actor: #0f766e;
+      --actor-soft: #e8f6f3;
+      --film: #7c3aed;
+      --film-soft: #f1eafe;
+      --critic: #2563eb;
+      --critic-soft: #eaf1ff;
+      --train: #b45309;
+      --train-soft: #fff3df;
+      --danger: #b42318;
+      --code-bg: #111827;
+      --code-ink: #e5edf9;
+      --shadow: 0 18px 55px rgba(35, 47, 76, 0.10);
+      --radius: 16px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 8% 0%, rgba(124, 58, 237, 0.07), transparent 26rem),
+        radial-gradient(circle at 94% 4%, rgba(15, 118, 110, 0.08), transparent 28rem),
+        var(--bg);
+      color: var(--ink);
+      font-family: Inter, "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+      line-height: 1.72;
+    }
+
+    a { color: var(--critic); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); min-height: 100vh; }
+    aside {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      height: 100vh;
+      overflow: auto;
+      padding: 28px 22px;
+      background: rgba(255, 255, 255, 0.82);
+      backdrop-filter: blur(16px);
+      border-right: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 11px; margin-bottom: 24px; }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      color: white;
+      font-weight: 850;
+      background: linear-gradient(145deg, var(--actor), var(--film));
+      box-shadow: 0 8px 20px rgba(76, 63, 170, 0.22);
+    }
+    .brand strong { display: block; line-height: 1.2; }
+    .brand small { color: var(--muted); }
+    nav a {
+      display: block;
+      margin: 2px 0;
+      padding: 7px 9px;
+      color: var(--muted);
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    nav a:hover { color: var(--ink); background: #eef2f8; text-decoration: none; }
+    .side-note {
+      margin-top: 24px;
+      padding: 13px;
+      color: var(--muted);
+      background: #f4f6fa;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      font-size: 12px;
+    }
+
+    main { width: min(1260px, 100%); padding: 44px 42px 80px; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 48px;
+      background: rgba(255, 255, 255, 0.93);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -110px;
+      top: -155px;
+      width: 430px;
+      height: 430px;
+      border-radius: 50%;
+      background: conic-gradient(from 40deg, rgba(15,118,110,.16), rgba(124,58,237,.12), transparent 64%);
+    }
+    .eyebrow {
+      position: relative;
+      z-index: 1;
+      margin: 0 0 10px;
+      color: var(--film);
+      font-weight: 800;
+      font-size: 13px;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    h1 { position: relative; z-index: 1; margin: 0; font-size: clamp(34px, 5vw, 58px); line-height: 1.08; }
+    .subtitle { position: relative; z-index: 1; max-width: 900px; margin: 18px 0 0; color: var(--muted); font-size: 18px; }
+    .pill-row { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 9px; margin-top: 22px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 31px;
+      padding: 4px 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #f9fbff;
+      color: #3c465a;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    section {
+      margin-top: 28px;
+      padding: 32px;
+      background: rgba(255,255,255,.96);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: 0 10px 32px rgba(35, 47, 76, 0.06);
+    }
+    h2 { margin: 0 0 18px; font-size: 27px; line-height: 1.25; }
+    h3 { margin: 26px 0 10px; font-size: 19px; line-height: 1.35; }
+    h4 { margin: 18px 0 8px; font-size: 16px; }
+    p { margin: 0 0 14px; }
+    ul, ol { padding-left: 22px; }
+    li { margin: 7px 0; }
+    code {
+      padding: 2px 6px;
+      border: 1px solid #dbe1eb;
+      border-radius: 5px;
+      background: #eef2f7;
+      color: #293449;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: .91em;
+    }
+    pre {
+      margin: 14px 0;
+      padding: 18px 20px;
+      overflow: auto;
+      border-radius: 12px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      font: 13px/1.62 "JetBrains Mono", Consolas, monospace;
+    }
+    pre code { padding: 0; border: 0; background: transparent; color: inherit; font-size: inherit; }
+
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 16px 0; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 16px 0; }
+    .card { padding: 18px; background: #fbfcff; border: 1px solid var(--line); border-radius: 13px; }
+    .card h3, .card h4 { margin-top: 0; }
+    .card p:last-child { margin-bottom: 0; }
+    .metric { font-size: 28px; font-weight: 850; line-height: 1.1; }
+    .metric.actor { color: var(--actor); }
+    .metric.film { color: var(--film); }
+    .metric.critic { color: var(--critic); }
+    .label { margin-top: 7px; color: var(--muted); font-size: 13px; }
+
+    .callout, .warning, .definition {
+      margin: 16px 0;
+      padding: 15px 17px;
+      border-left: 5px solid var(--actor);
+      border-radius: 10px;
+      background: var(--actor-soft);
+    }
+    .warning { border-color: var(--train); background: var(--train-soft); }
+    .definition { border-color: var(--film); background: var(--film-soft); }
+    .callout p:last-child, .warning p:last-child, .definition p:last-child { margin-bottom: 0; }
+
+    .diagram-shell {
+      margin: 18px 0 8px;
+      padding: 15px;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: linear-gradient(180deg, #fbfdff, #f7f9fd);
+    }
+    .diagram-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .diagram-toolbar span { margin-right: 4px; color: var(--muted); font-size: 13px; font-weight: 700; }
+    .mode-button {
+      cursor: pointer;
+      padding: 7px 12px;
+      color: #465066;
+      background: white;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 750;
+    }
+    .mode-button[aria-pressed="true"] { color: white; border-color: var(--film); background: var(--film); }
+    svg.arch { display: block; width: 100%; min-width: 920px; height: auto; }
+    svg .box { fill: #fff; stroke: #cfd7e6; stroke-width: 2; }
+    svg .actor-box { fill: #ebf8f5; stroke: #0f766e; }
+    svg .film-box { fill: #f4edff; stroke: #7c3aed; }
+    svg .critic-box { fill: #edf3ff; stroke: #2563eb; }
+    svg .train-box { fill: #fff5e6; stroke: #b45309; }
+    svg .title { fill: #172033; font-size: 18px; font-weight: 800; }
+    svg .body { fill: #4b5568; font-size: 14px; }
+    svg .tiny { fill: #667085; font-size: 12px; }
+    svg .tag { fill: #fff; stroke-width: 1.5; }
+    svg .edge { fill: none; stroke: #6b7487; stroke-width: 2.4; marker-end: url(#arrow); }
+    svg .actor-edge { stroke: #0f766e; marker-end: url(#arrowActor); }
+    svg .film-edge { stroke: #7c3aed; stroke-dasharray: 8 6; marker-end: url(#arrowFilm); transition: opacity .25s; }
+    svg .critic-edge { stroke: #2563eb; marker-end: url(#arrowCritic); }
+    svg .train-edge { stroke: #b45309; stroke-dasharray: 7 5; marker-end: url(#arrowTrain); }
+    svg .film-node { transition: opacity .25s; }
+    #system-diagram[data-mode="shared"] .film-node { opacity: .22; }
+    #system-diagram[data-mode="shared"] .film-edge { opacity: .12; }
+    #system-diagram[data-mode="film"] .film-node,
+    #system-diagram[data-mode="film"] .film-edge { opacity: 1; }
+    .diagram-caption { margin: 10px 4px 0; color: var(--muted); font-size: 13px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .legend i { display: inline-block; width: 12px; height: 12px; margin-right: 5px; border-radius: 3px; vertical-align: -1px; }
+
+    table { width: 100%; border-collapse: collapse; margin: 15px 0 20px; font-size: 14px; }
+    th, td { padding: 11px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #eef3fa; font-weight: 800; }
+    tbody tr:nth-child(even) td { background: #fbfcff; }
+    .yes { color: var(--actor); font-weight: 800; }
+    .no { color: var(--muted); font-weight: 700; }
+    .formula {
+      margin: 13px 0;
+      padding: 14px 17px;
+      overflow-x: auto;
+      background: #f7f8fc;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font: 15px/1.8 "Cambria Math", "Times New Roman", serif;
+      white-space: nowrap;
+    }
+    .source-list a { font-family: "JetBrains Mono", Consolas, monospace; font-size: 13px; }
+    .footer { margin-top: 28px; padding: 18px 4px; color: var(--muted); font-size: 13px; text-align: center; }
+
+    @media (max-width: 980px) {
+      .layout { display: block; }
+      aside { position: static; width: auto; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      nav { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+      nav a { display: inline-block; }
+      .side-note { display: none; }
+      main { padding: 24px 18px 56px; }
+      .hero { padding: 32px 26px; }
+      section { padding: 24px 20px; }
+      .grid, .grid-3 { grid-template-columns: 1fr; }
+    }
+
+    @media print {
+      body { background: white; }
+      aside { display: none; }
+      .layout { display: block; }
+      main { width: 100%; padding: 0; }
+      .hero, section { box-shadow: none; break-inside: avoid; }
+      .diagram-toolbar { display: none; }
+      #system-diagram .film-node, #system-diagram .film-edge { opacity: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <div class="brand">
+        <div class="brand-mark">H·I</div>
+        <div><strong>HyperIRU</strong><small>Implementation note</small></div>
+      </div>
+      <nav aria-label="文件目錄">
+        <a href="#summary">一頁摘要</a>
+        <a href="#overview">完整架構圖</a>
+        <a href="#inputs">輸入與 ID 路徑</a>
+        <a href="#iru">IRU 內部結構</a>
+        <a href="#film">FiLM 路口特化</a>
+        <a href="#critic">Centralized critic</a>
+        <a href="#training">PPO 訓練流程</a>
+        <a href="#parameters">參數與計算量</a>
+        <a href="#ablation">2×2 實驗設計</a>
+        <a href="#commands">執行指令</a>
+        <a href="#implementation">程式對照</a>
+        <a href="#limits">邊界與限制</a>
+      </nav>
+      <div class="side-note">
+        文件依據目前 workspace 實作產生。<br>
+        更新日期：2026-07-17<br>
+        主要模式：<code>none</code> / <code>film</code>
+      </div>
+    </aside>
+
+    <main>
+      <header class="hero">
+        <p class="eyebrow">LibSignal · HyperLight × IRU</p>
+        <h1>HyperIRU 現行架構</h1>
+        <p class="subtitle">
+          一個遵循 CTDE 的交通號誌控制器：actor 以 IRU 在單次決策內重複計算，
+          HyperLight learned intersection embedding 可選擇透過 FiLM 特化每個路口；
+          centralized critic 保持原本的 HyperLight pooled value hypernetwork。
+        </p>
+        <div class="pill-row">
+          <span class="pill">Actor-only IRU</span>
+          <span class="pill">Shared weights across intersections</span>
+          <span class="pill">Optional learned64 → FiLM</span>
+          <span class="pill">No temporal hidden state</span>
+          <span class="pill">PPO / GAE</span>
+        </div>
+      </header>
+
+      <section id="summary">
+        <h2>一頁摘要</h2>
+        <div class="grid-3">
+          <div class="card">
+            <div class="metric actor">IRU actor</div>
+            <div class="label">queue + phase → recurrent computation → phase logits</div>
+            <p>每個路口共用同一套 IRU 權重；每次環境決策都重新將 cell/hidden 歸零。</p>
+          </div>
+          <div class="card">
+            <div class="metric film">4H FiLM</div>
+            <div class="label">learned ID → γ/β for context and hidden</div>
+            <p>當 hidden size <code>H=64</code> 時，每個路口的 actor hypernetwork 輸出 256 個 FiLM 值。</p>
+          </div>
+          <div class="card">
+            <div class="metric critic">CTDE</div>
+            <div class="label">local execution · pooled centralized value</div>
+            <p>actor 只需要本地狀態；critic 在訓練時加入所有路口的 mean/std/max/min。</p>
+          </div>
+        </div>
+        <div class="definition">
+          <p><strong>HyperIRU 在這份文件中的定義：</strong>指 <code>hyper_actor_arch=iru</code>，並使用
+          <code>hyper_adapter_mode=none</code>（Shared IRU）或 <code>film</code>（HyperLight-FiLM IRU）。
+          <code>generated</code> 不支援 IRU，因為目前刻意不生成整套 IRU 權重。</p>
+        </div>
+      </section>
+
+      <section id="overview">
+        <h2>完整架構圖</h2>
+        <p>下圖同時呈現 decentralized actor、learned-ID FiLM 路徑、centralized critic 和 PPO update。按鈕可切換要強調的 actor 模式。</p>
+        <div class="diagram-shell">
+          <div class="diagram-toolbar">
+            <span>顯示模式</span>
+            <button class="mode-button" type="button" data-diagram-mode="shared" aria-pressed="false">Shared IRU</button>
+            <button class="mode-button" type="button" data-diagram-mode="film" aria-pressed="true">FiLM IRU</button>
+          </div>
+          <svg id="system-diagram" class="arch" data-mode="film" viewBox="0 0 1460 850" role="img" aria-labelledby="system-title system-desc">
+            <title id="system-title">HyperIRU 完整架構圖</title>
+            <desc id="system-desc">queue 與 phase 進入 shared IRU actor；learned ID 可經 hypernetwork 產生 FiLM；centralized critic 使用 pooled global state；PPO 共同更新 actor 和 critic。</desc>
+            <defs>
+              <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#6b7487"/></marker>
+              <marker id="arrowActor" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#0f766e"/></marker>
+              <marker id="arrowFilm" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#7c3aed"/></marker>
+              <marker id="arrowCritic" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#2563eb"/></marker>
+              <marker id="arrowTrain" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#b45309"/></marker>
+            </defs>
+
+            <text x="40" y="36" class="title">Environment / local observation</text>
+            <rect x="40" y="55" width="245" height="118" rx="16" class="box"/>
+            <text x="61" y="84" class="title">Intersection i</text>
+            <text x="61" y="111" class="body">lane_count / vehicle_max</text>
+            <text x="61" y="134" class="body">lane_waiting_count / vehicle_max</text>
+            <text x="61" y="157" class="body">one-hot current phase</text>
+
+            <rect x="40" y="228" width="245" height="100" rx="16" class="film-box film-node"/>
+            <text x="61" y="260" class="title">Learned intersection ID</text>
+            <text x="61" y="286" class="body">eᵢ ∈ ℝ⁶⁴</text>
+            <text x="61" y="309" class="tiny">獨立 meta；不是 state concatenation</text>
+
+            <text x="345" y="36" class="title">Decentralized actor</text>
+            <rect x="335" y="55" width="710" height="355" rx="22" fill="#f5fbfa" stroke="#9acfc6" stroke-width="2"/>
+
+            <rect x="370" y="85" width="190" height="96" rx="14" class="actor-box"/>
+            <text x="391" y="116" class="title">Input embedding</text>
+            <text x="391" y="143" class="body">Linear(D → H)</text>
+            <text x="391" y="164" class="body">LayerNorm(H)</text>
+
+            <rect x="606" y="85" width="184" height="96" rx="14" class="film-box film-node"/>
+            <text x="627" y="116" class="title">Context FiLM</text>
+            <text x="627" y="143" class="body">γᶜ, βᶜ ∈ ℝᴴ</text>
+            <text x="627" y="164" class="tiny">shared 模式：identity</text>
+
+            <rect x="836" y="76" width="174" height="218" rx="16" class="actor-box"/>
+            <text x="857" y="107" class="title">IRU loop × N</text>
+            <text x="857" y="135" class="body">m₀ = 0, h₀ = 0</text>
+            <text x="857" y="161" class="body">concat(context, h)</text>
+            <text x="857" y="184" class="body">forget / candidate</text>
+            <text x="857" y="207" class="body">cell interpolation</text>
+            <text x="857" y="230" class="body">residual hidden</text>
+            <text x="857" y="257" class="tiny">同一組參數重複使用</text>
+            <path d="M 984 271 C 1040 286, 1040 108, 997 111" class="edge actor-edge"/>
+
+            <rect x="606" y="238" width="184" height="92" rx="14" class="film-box film-node"/>
+            <text x="627" y="269" class="title">Hidden FiLM</text>
+            <text x="627" y="296" class="body">γʰ, βʰ ∈ ℝᴴ</text>
+            <text x="627" y="317" class="tiny">每個 thinking step 重用</text>
+
+            <rect x="370" y="255" width="190" height="98" rx="14" class="actor-box"/>
+            <text x="391" y="286" class="title">Output head</text>
+            <text x="391" y="313" class="body">Linear(H → A)</text>
+            <text x="391" y="336" class="body">phase action mask</text>
+
+            <rect x="1100" y="103" width="300" height="132" rx="17" class="actor-box"/>
+            <text x="1122" y="135" class="title">Policy π(aᵢ | sᵢ, eᵢ)</text>
+            <text x="1122" y="163" class="body">train: Categorical sampling</text>
+            <text x="1122" y="188" class="body">test: argmax (default)</text>
+            <text x="1122" y="213" class="tiny">只輸出該路口的合法 phase</text>
+
+            <rect x="340" y="456" width="1060" height="220" rx="22" fill="#f5f8ff" stroke="#9bb9ef" stroke-width="2"/>
+            <text x="365" y="490" class="title">Centralized critic（兩種 actor 模式完全相同）</text>
+            <rect x="375" y="520" width="225" height="112" rx="14" class="critic-box"/>
+            <text x="396" y="551" class="title">Pooled global context</text>
+            <text x="396" y="578" class="body">μ(S), σ(S), max(S), min(S)</text>
+            <text x="396" y="603" class="body">vᵢ = [sᵢ, global stats]</text>
+            <text x="396" y="622" class="tiny">dimension = 5D</text>
+
+            <rect x="660" y="520" width="220" height="112" rx="14" class="film-box"/>
+            <text x="681" y="551" class="title">Value hypernetwork</text>
+            <text x="681" y="578" class="body">eᵢ → θᵛᵢ</text>
+            <text x="681" y="603" class="body">per-intersection critic weights</text>
+            <text x="681" y="622" class="tiny">chunked generation supported</text>
+
+            <rect x="940" y="520" width="225" height="112" rx="14" class="critic-box"/>
+            <text x="961" y="551" class="title">Generated value MLP</text>
+            <text x="961" y="578" class="body">5D → 128 → 64 → 1</text>
+            <text x="961" y="603" class="body">Vᵢ(S, eᵢ)</text>
+            <text x="961" y="622" class="tiny">只在訓練與 advantage 使用</text>
+
+            <rect x="1100" y="724" width="300" height="90" rx="16" class="train-box"/>
+            <text x="1122" y="756" class="title">PPO + GAE update</text>
+            <text x="1122" y="782" class="body">policy + value − entropy</text>
+            <text x="1122" y="803" class="tiny">shared actor / FiLM hypernet / critic jointly trained</text>
+
+            <rect x="360" y="724" width="640" height="90" rx="16" class="train-box"/>
+            <text x="382" y="756" class="title">Rollout buffer</text>
+            <text x="382" y="782" class="body">state, next_state, action, scaled reward, done, old log π, old V</text>
+            <text x="382" y="803" class="tiny">default rollout steps = 360；GAE γ=.99, λ=.95</text>
+
+            <path d="M285 112 L370 132" class="edge actor-edge"/>
+            <path d="M560 133 L606 133" class="edge actor-edge"/>
+            <path d="M790 133 L836 143" class="edge actor-edge"/>
+            <path d="M836 250 L790 281" class="edge actor-edge"/>
+            <path d="M606 284 L560 304" class="edge actor-edge"/>
+            <path d="M560 304 C820 380, 960 359, 1100 195" class="edge actor-edge"/>
+
+            <path d="M285 278 C390 218, 480 205, 606 120" class="film-edge"/>
+            <rect x="383" y="191" width="180" height="50" rx="12" class="film-box film-node"/>
+            <text x="401" y="221" class="body">Actor hypernet: 64 → 64 → 4H</text>
+            <path d="M563 216 C610 220, 650 220, 690 238" class="film-edge"/>
+
+            <path d="M160 173 C155 440, 260 560, 375 576" class="edge critic-edge"/>
+            <path d="M285 293 C470 420, 530 530, 660 572" class="edge critic-edge"/>
+            <path d="M600 576 L660 576" class="edge critic-edge"/>
+            <path d="M880 576 L940 576" class="edge critic-edge"/>
+
+            <path d="M1250 235 L1250 724" class="train-edge"/>
+            <path d="M1052 632 C1080 680, 1150 700, 1210 724" class="train-edge"/>
+            <path d="M1000 769 L1100 769" class="train-edge"/>
+            <path d="M1100 790 C1035 830, 790 834, 720 814" class="train-edge"/>
+          </svg>
+          <div class="legend">
+            <span><i style="background:#e8f6f3;border:1px solid #0f766e"></i>Actor / IRU</span>
+            <span><i style="background:#f1eafe;border:1px solid #7c3aed"></i>Learned ID / FiLM</span>
+            <span><i style="background:#eaf1ff;border:1px solid #2563eb"></i>Critic</span>
+            <span><i style="background:#fff3df;border:1px solid #b45309"></i>Training</span>
+          </div>
+          <p id="diagram-mode-note" class="diagram-caption">FiLM IRU：learned ID 透過 actor hypernetwork 產生 context/hidden γ、β；state 本身仍只有 queue + phase。</p>
+        </div>
+      </section>
+
+      <section id="inputs">
+        <h2>輸入、張量與 learned ID 路徑</h2>
+        <h3>1. Local state</h3>
+        <p>每個路口 <em>i</em> 的 actor state 由進入車道的兩類特徵與目前 phase 組成：</p>
+        <div class="formula">sᵢ = concat([lane_countᵢ / vehicle_max, lane_waiting_countᵢ / vehicle_max], one_hot(phaseᵢ)) ∈ ℝᴰ</div>
+        <ul>
+          <li><code>vehicle_max=50</code>；不同路口的 lane feature 會 pad 到共同長度。</li>
+          <li><code>phase=True</code>、<code>one_hot=True</code>；phase 維度取所有路口最大 action 數。</li>
+          <li>action mask 在 logits 上把不存在的 phase 設為 <code>-1e9</code>。</li>
+        </ul>
+
+        <h3>2. Learned intersection meta</h3>
+        <p>每個路口另有可學習向量 <code>eᵢ ∈ ℝ⁶⁴</code>。它不會直接 append 到 <code>sᵢ</code>：</p>
+        <table>
+          <thead><tr><th>模式</th><th>actor 看見什麼</th><th>eᵢ 在 actor 的用途</th><th>eᵢ 在 critic 的用途</th></tr></thead>
+          <tbody>
+            <tr><td>Shared IRU / <code>none</code></td><td>只有 <code>sᵢ</code></td><td class="no">不用</td><td class="yes">生成 θᵛᵢ</td></tr>
+            <tr><td>FiLM IRU / <code>film</code></td><td><code>sᵢ</code>；另有 FiLM 條件</td><td class="yes">生成 4H 個 γ/β</td><td class="yes">生成 θᵛᵢ</td></tr>
+            <tr><td>舊 MAPPO-IRU learned-ID</td><td><code>concat(sᵢ,eᵢ)</code></td><td class="yes">直接作為 state feature</td><td>Native MAPPO critic</td></tr>
+          </tbody>
+        </table>
+        <div class="warning"><p><strong>命名注意：</strong>「FiLM IRU input = queue+phase+learned ID」容易誤解。較精確的寫法是：actor state 為 queue+phase，learned ID 是獨立 conditioning signal。</p></div>
+      </section>
+
+      <section id="iru">
+        <h2>IRU 內部結構：單次決策內的 recurrent depth</h2>
+        <div class="diagram-shell">
+          <svg class="arch" viewBox="0 0 1400 560" role="img" aria-labelledby="iru-title iru-desc">
+            <title id="iru-title">IRU 內部計算圖</title>
+            <desc id="iru-desc">輸入先映射為 context；每個 thinking step 使用 forget gate 和 candidate 更新 cell，經 residual hidden 與 optional FiLM，最後輸出 phase logits。</desc>
+            <defs>
+              <marker id="iArrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#0f766e"/></marker>
+              <marker id="iFilm" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#7c3aed"/></marker>
+            </defs>
+            <rect x="28" y="205" width="145" height="82" rx="14" class="box"/>
+            <text x="50" y="238" class="title">Local state</text><text x="50" y="264" class="body">sᵢ ∈ ℝᴰ</text>
+            <rect x="215" y="205" width="170" height="82" rx="14" class="actor-box"/>
+            <text x="237" y="238" class="title">Input linear</text><text x="237" y="264" class="body">D → H + LN</text>
+            <rect x="430" y="205" width="170" height="82" rx="14" class="film-box"/>
+            <text x="452" y="238" class="title">Context FiLM</text><text x="452" y="264" class="body">optional identity</text>
+            <rect x="660" y="72" width="440" height="350" rx="22" fill="#f1faf8" stroke="#69b8aa" stroke-width="2"/>
+            <text x="686" y="107" class="title">Thinking step t = 1 … N</text>
+            <rect x="700" y="135" width="170" height="76" rx="13" class="actor-box"/>
+            <text x="720" y="165" class="title">Combine + LN</text><text x="720" y="191" class="body">zₜ = LN([x, hₜ₋₁])</text>
+            <rect x="912" y="135" width="155" height="76" rx="13" class="actor-box"/>
+            <text x="932" y="165" class="title">Two gates</text><text x="932" y="191" class="body">fₜ, gₜ</text>
+            <rect x="700" y="250" width="170" height="82" rx="13" class="actor-box"/>
+            <text x="720" y="281" class="title">Cell interpolate</text><text x="720" y="307" class="body">mₜ = fₜmₜ₋₁+(1−fₜ)gₜ</text>
+            <rect x="912" y="250" width="155" height="82" rx="13" class="actor-box"/>
+            <text x="932" y="281" class="title">Residual</text><text x="932" y="307" class="body">hₜ₋₁ + tanh(mₜ)</text>
+            <rect x="785" y="362" width="190" height="76" rx="13" class="film-box"/>
+            <text x="807" y="391" class="title">Hidden FiLM</text><text x="807" y="417" class="body">optional; same γʰ, βʰ</text>
+            <rect x="1155" y="205" width="205" height="82" rx="14" class="actor-box"/>
+            <text x="1177" y="238" class="title">Output head</text><text x="1177" y="264" class="body">H → A phase logits</text>
+            <path d="M173 246 L215 246" fill="none" stroke="#0f766e" stroke-width="2.5" marker-end="url(#iArrow)"/>
+            <path d="M385 246 L430 246" fill="none" stroke="#0f766e" stroke-width="2.5" marker-end="url(#iArrow)"/>
+            <path d="M600 246 L700 173" fill="none" stroke="#0f766e" stroke-width="2.5" marker-end="url(#iArrow)"/>
+            <path d="M870 173 L912 173" fill="none" stroke="#0f766e" stroke-width="2.5" marker-end="url(#iArrow)"/>
+            <path d="M990 211 L822 250" fill="none" stroke="#0f766e" stroke-width="2.5" marker-end="url(#iArrow)"/>
+            <path d="M870 291 L912 291" fill="none" stroke="#0f766e" stroke-width="2.5" marker-end="url(#iArrow)"/>
+            <path d="M990 332 L953 362" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#iFilm)"/>
+            <path d="M975 400 C1125 470, 1140 335, 1045 207" fill="none" stroke="#0f766e" stroke-width="2.5" marker-end="url(#iArrow)"/>
+            <path d="M1100 246 L1155 246" fill="none" stroke="#0f766e" stroke-width="2.5" marker-end="url(#iArrow)"/>
+            <rect x="420" y="40" width="235" height="92" rx="14" class="film-box"/>
+            <text x="442" y="72" class="title">FiLM parameters</text><text x="442" y="99" class="body">γᶜ, βᶜ, γʰ, βʰ = Hyper(eᵢ)</text><text x="442" y="119" class="tiny">Shared mode: absent</text>
+            <path d="M512 132 L512 205" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#iFilm)"/>
+            <path d="M655 86 C770 45, 870 150, 870 362" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#iFilm)"/>
+            <text x="675" y="492" class="body">m₀ = 0, h₀ = 0；下一個環境 timestep 再次歸零</text>
+            <text x="675" y="520" class="tiny">N 增加計算深度，但不增加 IRU base parameters；FiLM output 仍固定為 4H。</text>
+          </svg>
+        </div>
+
+        <h3>數學定義</h3>
+        <div class="formula">x = LN(Wᵢₙsᵢ + bᵢₙ)</div>
+        <div class="formula">FiLM(u; γ,β) = u ⊙ (1 + α tanh γ) + α tanh β，α = hyper_film_scale</div>
+        <div class="formula">zₜ = LN([x, hₜ₋₁]),　fₜ = σ(Wfzₜ + bf),　gₜ = tanh(Wgzₜ + bg)</div>
+        <div class="formula">mₜ = fₜ ⊙ mₜ₋₁ + (1 − fₜ) ⊙ gₜ,　h̃ₜ = tanh(mₜ),　hₜ = hₜ₋₁ + h̃ₜ</div>
+        <p>FiLM 模式在 input context 上套用一次 <code>(γᶜ,βᶜ)</code>，並在每個 thinking step 的 residual hidden 後套用同一組 <code>(γʰ,βʰ)</code>。</p>
+        <div class="callout"><p><strong>為什麼零初始化重要：</strong>actor hypernetwork 最後一層初始化為零，因此訓練開始時 FiLM IRU 與 Shared IRU 完全等價；模型先從共享策略開始，再逐步學習路口特化。</p></div>
+      </section>
+
+      <section id="film">
+        <h2>HyperLight-FiLM：路口特化而不生成整套 IRU</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>Shared IRU</h3>
+            <p><code>hyper_adapter_mode=none</code></p>
+            <ul>
+              <li>所有路口共用同一個 IRU。</li>
+              <li>actor 不讀 learned ID。</li>
+              <li>用來量測 IRU 架構本身的效果。</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>HyperLight-FiLM IRU</h3>
+            <p><code>hyper_adapter_mode=film</code></p>
+            <ul>
+              <li>IRU base weights 仍由所有路口共享。</li>
+              <li>每個路口用 eᵢ 產生小型 activation adapter。</li>
+              <li>用來量測路口特化是否與 recurrent computation 疊加。</li>
+            </ul>
+          </div>
+        </div>
+        <p>Actor hypernetwork 的現行結構是 <code>64 → 64 → 4H</code>。對 <code>H=64</code> 而言輸出維度是 256，遠小於直接為 IRU 生成約 19.5k 個 base parameters。這是目前選擇 FiLM 而非 full generated IRU 的主要工程理由。</p>
+      </section>
+
+      <section id="critic">
+        <h2>Centralized critic：保持 HyperLight MAPPO 路徑</h2>
+        <p><code>hyperlight_mappo.yml</code> 將 critic 設為 <code>centralized_critic=True</code>、<code>centralized_critic_mode=pooled</code>。對 batch 中所有路口狀態 <code>S</code>：</p>
+        <div class="formula">g(S) = concat(mean(S), std(S), max(S), min(S))</div>
+        <div class="formula">vᵢ = concat(sᵢ, g(S)) ∈ ℝ⁵ᴰ</div>
+        <div class="formula">θᵛᵢ = HyperValue(eᵢ),　Vᵢ = MLP(vᵢ; θᵛᵢ),　MLP widths = [5D, 128, 64, 1]</div>
+        <ul>
+          <li>每個路口的 learned embedding 生成自己的 value-network weights。</li>
+          <li>Shared IRU 和 FiLM IRU 使用完全相同的 critic，才能作 actor-only ablation。</li>
+          <li>執行期選號誌 phase 不需要 global statistics 或 critic。</li>
+          <li><code>value_chunk_size=16</code> 限制一次 materialize 的 generated critic weights，降低 peak memory。</li>
+        </ul>
+      </section>
+
+      <section id="training">
+        <h2>PPO 訓練資料流</h2>
+        <ol>
+          <li>每 10 simulator seconds 做一次決策，actor 產生 masked categorical policy。</li>
+          <li>rollout buffer 保存 raw state、next state、action、reward、done、old log-prob 和 old value。</li>
+          <li>累積 <code>ppo_rollout_steps=360</code> 後，使用 GAE 計算 advantage/return。</li>
+          <li>進行 4 個 PPO epochs；minibatch 上限為 2048 agent samples。</li>
+          <li>共同最佳化 policy loss、clipped value loss 與 entropy bonus。</li>
+        </ol>
+        <div class="formula">L = Lᴾᴾᴼ + 0.5 Lvalue − 0.01 H(π)</div>
+        <table>
+          <thead><tr><th>設定</th><th>目前值</th><th>作用</th></tr></thead>
+          <tbody>
+            <tr><td>γ / GAE λ</td><td>0.99 / 0.95</td><td>discount 與 advantage 平滑</td></tr>
+            <tr><td>PPO clip ε</td><td>0.2</td><td>限制 policy ratio 更新幅度</td></tr>
+            <tr><td>value clip</td><td>0.2</td><td>限制 value update</td></tr>
+            <tr><td>reward</td><td>negative mean waiting queue</td><td>再乘 <code>reward_scale=0.05</code></td></tr>
+            <tr><td>gradient clip</td><td>0.5</td><td>控制 recurrent / hypernetwork 梯度</td></tr>
+            <tr><td>test action</td><td>argmax</td><td>測試時 deterministic</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="parameters">
+        <h2>參數量與計算深度</h2>
+        <p>令 actor state 維度為 <code>D</code>、hidden size 為 <code>H</code>、action 數為 <code>A</code>、IRU block 數為 <code>B</code>。開啟 LayerNorm 時，共享 IRU base 約為：</p>
+        <div class="formula">PIRU = DH + AH + 4BH² + (3 + 6B)H + A</div>
+        <p>以 16×3 常用形狀 <code>D=32, H=64, A=8, B=1</code> 計算：</p>
+        <div class="grid-3">
+          <div class="card"><div class="metric actor">19,528</div><div class="label">Shared IRU base actor parameters</div></div>
+          <div class="card"><div class="metric film">256</div><div class="label">Per-intersection FiLM output dimension = 4H</div></div>
+          <div class="card"><div class="metric critic">N-independent</div><div class="label">增加 thinking steps 不增加 base/FiLM parameters</div></div>
+        </div>
+        <p>當 <code>eᵢ=64</code>、actor hyper hidden=64 時，FiLM actor hypernetwork 約 20,800 parameters。它產生的是 activation modulation，不是每個路口永久保存一份 IRU。</p>
+        <div class="warning"><p><strong>時間成本仍會增加：</strong>雖然 n1→n5 不增加 IRU 參數，recurrent loop 的 gate、LayerNorm 和 hidden update 會執行五次，因此 decision latency 與 PPO update time 仍近似隨 thinking steps 增加。</p></div>
+      </section>
+
+      <section id="ablation">
+        <h2>建議的 2×2 actor-only ablation</h2>
+        <table>
+          <thead><tr><th>Actor</th><th>無 modulation</th><th>FiLM learned-ID modulation</th></tr></thead>
+          <tbody>
+            <tr><th>MLP</th><td>Shared MLP<br><code>mlp + none</code></td><td>HyperLight-FiLM MLP<br><code>mlp + film</code></td></tr>
+            <tr><th>IRU n1</th><td>Shared IRU<br><code>iru + none</code></td><td>HyperLight-FiLM IRU<br><code>iru + film</code></td></tr>
+          </tbody>
+        </table>
+        <ul>
+          <li><strong>Shared IRU − Shared MLP：</strong>IRU 架構本身的效果。</li>
+          <li><strong>FiLM MLP − Shared MLP：</strong>FiLM 路口特化本身的效果。</li>
+          <li><strong>FiLM IRU − Shared IRU：</strong>FiLM 對 IRU 的額外效果。</li>
+          <li><strong>interaction：</strong><code>(FiLM IRU − Shared IRU) − (FiLM MLP − Shared MLP)</code>。</li>
+        </ul>
+        <div class="callout"><p><strong>Parameter-matched control：</strong>在 16×3 的 <code>D=32、A=8</code> 下，
+        Shared MLP hidden widths 設為 <code>[124,116]</code> 時正好有 19,528 parameters，與
+        IRU n1（H=64、1 block、LayerNorm）完全相同。使用 CLI
+        <code>--hyper_actor_hidden1 124 --hyper_actor_hidden2 116</code>。</p></div>
+        <div class="warning"><p>既有 <code>learned64_seed*</code> 是 <code>generated MLP</code>，不是 Shared MLP；它應保留作原始 HyperLight baseline，但不取代 2×2 的左上格。</p></div>
+      </section>
+
+      <section id="commands">
+        <h2>執行指令</h2>
+        <h3>Shared IRU n1</h3>
+        <pre><code>python -u run.py \
+  --task tsc --agent hyperlight_mappo \
+  --world cityflow --network cityflow16x3 \
+  --prefix hyperlight_shared_iru1_seed0 --seed 0 --ngpu 0 \
+  --agent_embedding_mode learned \
+  --hyper_actor_arch iru --hyper_adapter_mode none \
+  --iru_actor_steps 1 --iru_hidden_dim 64 --iru_num_blocks 1 \
+  --hyper_residual False --episodes 250 --profile_performance True</code></pre>
+
+        <h3>HyperLight-FiLM IRU n1</h3>
+        <pre><code>python -u run.py \
+  --task tsc --agent hyperlight_mappo \
+  --world cityflow --network cityflow16x3 \
+  --prefix hyperlight_film_iru1_seed0 --seed 0 --ngpu 0 \
+  --agent_embedding_mode learned \
+  --hyper_actor_arch iru --hyper_adapter_mode film --hyper_film_scale 0.1 \
+  --iru_actor_steps 1 --iru_hidden_dim 64 --iru_num_blocks 1 \
+  --hyper_residual False --episodes 250 --profile_performance True</code></pre>
+        <p>將 <code>seed</code> 和 prefix 改成 1、2 即可完成三 seeds。FiLM 與 full/LoRA/head residual 是互斥路徑，因此這裡固定 <code>hyper_residual=False</code>。</p>
+      </section>
+
+      <section id="implementation">
+        <h2>程式實作對照</h2>
+        <table class="source-list">
+          <thead><tr><th>功能</th><th>實作位置</th></tr></thead>
+          <tbody>
+            <tr><td>actor architecture / adapter mode 解析</td><td><a href="../agent/hyperlight_ppo.py#L151">agent/hyperlight_ppo.py:151</a></td></tr>
+            <tr><td>IRUNetwork 建立</td><td><a href="../agent/hyperlight_ppo.py#L405">agent/hyperlight_ppo.py:405</a></td></tr>
+            <tr><td>none / film policy 分流</td><td><a href="../agent/hyperlight_ppo.py#L1740">agent/hyperlight_ppo.py:1740</a></td></tr>
+            <tr><td>FiLM actor dispatch</td><td><a href="../agent/hyperlight_ppo.py#L1597">agent/hyperlight_ppo.py:1597</a></td></tr>
+            <tr><td>IRU cell 與 recurrent loop</td><td><a href="../agent/iru.py#L5">agent/iru.py:5</a>、<a href="../agent/iru.py#L85">agent/iru.py:85</a></td></tr>
+            <tr><td>CLI options</td><td><a href="../run.py#L50">run.py:50</a></td></tr>
+            <tr><td>預設 hyperparameters</td><td><a href="../configs/tsc/hyperlight_ppo.yml#L42">configs/tsc/hyperlight_ppo.yml:42</a></td></tr>
+            <tr><td>MAPPO pooled critic override</td><td><a href="../configs/tsc/hyperlight_mappo.yml#L1">configs/tsc/hyperlight_mappo.yml</a></td></tr>
+            <tr><td>identity / gradient / checkpoint tests</td><td><a href="../tests/test_hyperlight_architecture.py#L189">tests/test_hyperlight_architecture.py:189</a></td></tr>
+          </tbody>
+        </table>
+        <p>Checkpoint architecture signature 已記錄 actor type、IRU hidden、steps、blocks、LayerNorm 與 adapter mode。Shared/FiLM IRU checkpoint 會保存 trainable shared base actor；舊版 MLP checkpoint 保留相容處理。</p>
+      </section>
+
+      <section id="limits">
+        <h2>目前邊界與限制</h2>
+        <ul>
+          <li><strong>沒有 full generated IRU：</strong><code>iru + generated</code> 會主動拋錯，避免 hypernetwork 輸出過大的完整 recurrent weights。</li>
+          <li><strong>不是跨 timestep RNN：</strong>cell/hidden 每次 forward 都從零開始，不能直接表示跨號誌週期的 temporal memory。</li>
+          <li><strong>FiLM 使用相同 hidden adapter：</strong>每個 thinking step 重用同一組 γʰ/βʰ；目前沒有 step-specific adapter。</li>
+          <li><strong>本文聚焦標準 HyperLight MAPPO：</strong>movement encoder、graph critic、CoS 等選項在此 16×3 2×2 實驗均關閉。</li>
+          <li><strong>n5 尚非預設：</strong>現有 MAPPO-IRU 結果未顯示 n5 勝過 n1；應在 n1 的 FiLM 增益成立後再擴充。</li>
+        </ul>
+      </section>
+
+      <footer class="footer">HyperIRU Architecture · generated from the current LibSignal implementation · 2026-07-17</footer>
+    </main>
+  </div>
+
+  <script>
+    (() => {
+      const diagram = document.getElementById('system-diagram');
+      const note = document.getElementById('diagram-mode-note');
+      const buttons = document.querySelectorAll('[data-diagram-mode]');
+      const notes = {
+        shared: 'Shared IRU：actor 完全忽略 learned ID；所有路口只共用 queue + phase → IRU。learned ID 仍供相同的 centralized critic 使用。',
+        film: 'FiLM IRU：learned ID 透過 actor hypernetwork 產生 context/hidden γ、β；state 本身仍只有 queue + phase。'
+      };
+      buttons.forEach((button) => {
+        button.addEventListener('click', () => {
+          const mode = button.dataset.diagramMode;
+          diagram.dataset.mode = mode;
+          note.textContent = notes[mode];
+          buttons.forEach((item) => item.setAttribute('aria-pressed', String(item === button)));
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

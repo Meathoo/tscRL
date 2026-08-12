@@ -1,0 +1,36 @@
+__pycache__/
+*.DS_Store
+.idea/
+.vscode/
+data/output_data
+/compare_outputs
+/tmp
+
+*.sh
+!resilient_run.sh
+data/raw_data/grid4x4/*.xml
+data/raw_data/grid4x4/*.pdf
+*.ipynb
+
+# resilient_run.sh 的執行紀錄（每個 prefix 一份），純運行期日誌，不是原始碼
+_resilient_*.log
+resume_*.log
+
+# avg_compare.py 產生的比較報表／中間輸出，可隨時重新產生，不是原始碼
+avg_compare_outputs_*/
+avg_compare_outputs/paper_table_*.csv
+
+# compare.py / avg_compare.py 之外，另一批可重新產生的圖表輸出，不是原始碼
+/fig_output
+
+# docs/ 底下唯一的暫存 log，不是筆記內容
+docs/tmp.log
+
+# 散落在 repo 根目錄的參考文獻 PDF（不是本專案產出的內容）
+/HyperMARL.pdf
+/IRU_On the role of computation in reinforcement learning.pdf
+/LibSignal.pdf
+/RegionLight.pdf
+
+# Windows 下載檔案留下的 NTFS 元資料，完全沒用
+*:Zone.Identifier*:Zone.Identifier

@@ -1,0 +1,15 @@
+includes:
+  - configs/tsc/hyperlight_ppo.yml
+
+
+model:
+  name: hyperlight_mappo
+  centralized_critic: True
+  # Stable pre-RF baseline. `concat` is closer to MAPPO paper style, but pooled
+  # is safer for TSC maps and matched the stronger early HyperLight-MAPPO runs.
+  centralized_critic_mode: pooled
+  value_hidden: [128, 64]
+
+
+trainer:
+  buffer_size: 1000

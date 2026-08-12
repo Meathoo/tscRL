@@ -1,0 +1,9 @@
+includes:
+  - configs/tsc/mappo.yml
+
+
+model:
+  name: native_mappo
+trainer:
+  early_stop_patience: 0
+  episodes: 250
