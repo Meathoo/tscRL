@@ -120,6 +120,21 @@ parser.add_argument('--hyper_chunk_size', type=int, default=None,
                     help='override model.hyper_chunk_size (chunked head only)')
 parser.add_argument('--hyper_chunk_embed_dim', type=int, default=None,
                     help='override model.hyper_chunk_embed_dim (chunked head only)')
+parser.add_argument('--hyper_actor_chunk_size', type=int, default=None,
+                    help='override model.hyper_actor_chunk_size (defaults to hyper_chunk_size)')
+parser.add_argument('--hyper_critic_chunk_size', type=int, default=None,
+                    help='override model.hyper_critic_chunk_size (defaults to hyper_chunk_size)')
+parser.add_argument('--hyper_chunk_generator_hidden', type=int, default=None,
+                    help='override model.hyper_chunk_generator_hidden; 0 keeps the '
+                         'single-Linear (purely additive) chunk generator')
+parser.add_argument('--hyper_hidden', type=str, default=None,
+                    help='override model.hyper_hidden, e.g. "256" or "128,64"')
+parser.add_argument('--value_hyper_hidden', type=str, default=None,
+                    help='override model.value_hyper_hidden; defaults to --hyper_hidden')
+parser.add_argument('--agent_embedding_dim', type=int, default=None,
+                    help='override model.agent_embedding_dim (agent_embedding_mode=learned only)')
+parser.add_argument('--hyper_rf_init', type=str2bool, nargs='?', const=True, default=None,
+                    help='override model.hyper_rf_init (fan-in calibrated generator init)')
 parser.add_argument('--save_rate', type=int, default=None,
                     help='override logger.save_rate (checkpoint every N episodes)')
 

@@ -184,6 +184,23 @@ class HyperLightPPOAgent(RLAgent):
             raise ValueError('hyper_chunk_size must be positive')
         if self.hyper_chunk_embed_dim <= 0:
             raise ValueError('hyper_chunk_embed_dim must be positive')
+        # The critic head holds ~2/3 of the chunked parameter budget while only the
+        # actor is used at deployment time, so the two sides can be sized apart.
+        # Both fall back to hyper_chunk_size, keeping single-knob runs unchanged.
+        actor_chunk_size = cfg.get('hyper_actor_chunk_size', None)
+        critic_chunk_size = cfg.get('hyper_critic_chunk_size', None)
+        self.hyper_actor_chunk_size = int(
+            self.hyper_chunk_size if actor_chunk_size is None else actor_chunk_size
+        )
+        self.hyper_critic_chunk_size = int(
+            self.hyper_chunk_size if critic_chunk_size is None else critic_chunk_size
+        )
+        if self.hyper_actor_chunk_size <= 0 or self.hyper_critic_chunk_size <= 0:
+            raise ValueError('hyper_actor_chunk_size/hyper_critic_chunk_size must be positive')
+        # 0 keeps the original single-Linear generator (additive chunk conditioning).
+        self.hyper_chunk_generator_hidden = int(cfg.get('hyper_chunk_generator_hidden', 0) or 0)
+        if self.hyper_chunk_generator_hidden < 0:
+            raise ValueError('hyper_chunk_generator_hidden must be non-negative')
         self.hyper_adapter_mode = str(cfg.get('hyper_adapter_mode', 'generated')).lower()
         adapter_aliases = {
             'full': 'generated',
@@ -538,8 +555,9 @@ class HyperLightPPOAgent(RLAgent):
                 head_init_gain=float(
                     cfg.get('hyper_actor_head_init_gain', self.hyper_head_init_gain)
                 ),
-                chunk_size=self.hyper_chunk_size,
+                chunk_size=self.hyper_actor_chunk_size,
                 chunk_embed_dim=self.hyper_chunk_embed_dim,
+                chunk_generator_hidden=self.hyper_chunk_generator_hidden,
                 **self.actor_rf_init_config,
             ).to(self.device)
         if self.hyper_adapter_mode == 'film' and self.hyper_film_init_zero:
@@ -625,8 +643,9 @@ class HyperLightPPOAgent(RLAgent):
                 ),
                 use_bias=self.hyper_use_bias,
                 head_init_gain=float(cfg.get('hyper_value_head_init_gain', self.hyper_head_init_gain)),
-                chunk_size=self.hyper_chunk_size,
+                chunk_size=self.hyper_critic_chunk_size,
                 chunk_embed_dim=self.hyper_chunk_embed_dim,
+                chunk_generator_hidden=self.hyper_chunk_generator_hidden,
                 **self.value_rf_init_config,
             ).to(self.device)
             if (
@@ -669,7 +688,8 @@ class HyperLightPPOAgent(RLAgent):
             f"actor_hypernet={self.hypernet_type}/{self.hyper_adapter_mode}, "
             f"value_arch={value_arch}/{self.hyper_critic_adapter_mode}, "
             f"hyper_heads={self.hyper_head_mode}, "
-            f"chunk={self.hyper_chunk_size}/{self.hyper_chunk_embed_dim}, "
+            f"chunk={self.hyper_actor_chunk_size}:{self.hyper_critic_chunk_size}"
+            f"/{self.hyper_chunk_embed_dim}/g{self.hyper_chunk_generator_hidden}, "
             f"objective={self.policy_objective}, "
             f"embedding={self.embedding_mode}, topology={self.topology_aware_embedding}, "
             f"movement_encoder={self.movement_encoder_enabled}, "
@@ -2838,6 +2858,10 @@ class HyperLightPPOAgent(RLAgent):
             ),
             'value_hypernet_type': str(self.value_hypernet_type),
             'hyper_head_mode': self.hyper_head_mode,
+            'hyper_actor_chunk_size': int(self.hyper_actor_chunk_size),
+            'hyper_critic_chunk_size': int(self.hyper_critic_chunk_size),
+            'hyper_chunk_embed_dim': int(self.hyper_chunk_embed_dim),
+            'hyper_chunk_generator_hidden': int(self.hyper_chunk_generator_hidden),
             'actor_hidden': [int(self.actor_hidden1), int(self.actor_hidden2)],
             'value_hidden': list(self.value_hidden),
             'hyper_adapter_mode': self.hyper_adapter_mode,

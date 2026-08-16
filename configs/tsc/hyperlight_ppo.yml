@@ -108,6 +108,17 @@ model:
   # Smaller chunk_size means more sharing and fewer parameters.
   hyper_chunk_size: 8
   hyper_chunk_embed_dim: 16
+  # null falls back to hyper_chunk_size; the critic head costs ~2x the actor head,
+  # so the two sides can be sized independently.
+  hyper_actor_chunk_size: null
+  hyper_critic_chunk_size: null
+  # 0 keeps the single-Linear generator, where every chunk emits
+  # W_h*h + W_c*code_j + b and the agent-dependent block is therefore identical
+  # in every chunk. A positive width inserts one hidden layer after the
+  # concatenation so the chunk code and the meta vector interact (and, because
+  # the wide output head then reads from this width instead of
+  # trunk_dim + chunk_embed_dim, 64 is slightly cheaper than 0).
+  hyper_chunk_generator_hidden: 0
 
 # shared base + small hypernetwork residual delta
   # generated: original per-intersection generated MLP weights

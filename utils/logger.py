@@ -88,6 +88,22 @@ def modify_config_file(path, config):
             other_world_settings[k] = param.get(k)
     return other_world_settings
 
+def parse_hidden_dims(value):
+    """
+    parse a "256" / "128,64" hidden-width override into a list of ints
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [int(item) for item in value]
+    dims = [int(item) for item in str(value).replace(' ', '').split(',') if item != '']
+    if not dims:
+        raise ValueError(f"Empty hidden dimension override: {value!r}")
+    if any(dim <= 0 for dim in dims):
+        raise ValueError(f"Hidden dimensions must be positive: {value!r}")
+    return dims
+
+
 def build_config(args):
     """
     process command line arguments and parameters stored in .yaml files.
@@ -156,6 +172,17 @@ def build_config(args):
         'hyper_head_mode': getattr(args, 'hyper_head_mode', None),
         'hyper_chunk_size': getattr(args, 'hyper_chunk_size', None),
         'hyper_chunk_embed_dim': getattr(args, 'hyper_chunk_embed_dim', None),
+        'hyper_actor_chunk_size': getattr(args, 'hyper_actor_chunk_size', None),
+        'hyper_critic_chunk_size': getattr(args, 'hyper_critic_chunk_size', None),
+        'hyper_chunk_generator_hidden': getattr(args, 'hyper_chunk_generator_hidden', None),
+        'agent_embedding_dim': getattr(args, 'agent_embedding_dim', None),
+        'hyper_rf_init': getattr(args, 'hyper_rf_init', None),
+        'hyper_hidden': parse_hidden_dims(getattr(args, 'hyper_hidden', None)),
+        'value_hyper_hidden': parse_hidden_dims(
+            getattr(args, 'value_hyper_hidden', None)
+            if getattr(args, 'value_hyper_hidden', None) is not None
+            else getattr(args, 'hyper_hidden', None)
+        ),
     }
     for key, value in model_overrides.items():
         if value is not None:

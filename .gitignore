@@ -8,6 +8,8 @@ data/output_data
 
 *.sh
 !resilient_run.sh
+# study runners under scripts/ are source, not throwaway helpers
+!scripts/*.sh
 data/raw_data/grid4x4/*.xml
 data/raw_data/grid4x4/*.pdf
 *.ipynb

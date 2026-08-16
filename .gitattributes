@@ -1,0 +1,4 @@
+# Shell scripts must stay LF: this repo is checked out on Windows (core.autocrlf
+# is on) but the scripts run inside the Linux container through a bind mount,
+# where a CRLF shebang fails with "command not found" (exit 127).
+*.sh text eol=lf

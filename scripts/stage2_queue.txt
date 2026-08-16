@@ -1,0 +1,11 @@
+# Stage 2 (cityflow7x28) queue: <tag> <seed> <extra run.py args>
+# aw/c8 seeds 0 and 1 were launched earlier and are deliberately absent here.
+# Variant seed 0 runs first so the first 7x28 signal arrives as early as possible.
+c8rf 0 --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16 --hyper_rf_init True
+c8g64rf 0 --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16 --hyper_chunk_generator_hidden 64 --hyper_rf_init True
+aw 2 --hyper_head_mode flat
+c8 2 --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16
+c8rf 1 --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16 --hyper_rf_init True
+c8g64rf 1 --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16 --hyper_chunk_generator_hidden 64 --hyper_rf_init True
+c8rf 2 --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16 --hyper_rf_init True
+c8g64rf 2 --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16 --hyper_chunk_generator_hidden 64 --hyper_rf_init True

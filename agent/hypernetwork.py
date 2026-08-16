@@ -124,9 +124,27 @@ class LinearHyperNetwork(nn.Module):
 class MLPHyperNetwork(nn.Module):
     """
     MLP generator for flattened target-network parameters.
+
+    With ``rf_init`` this head gets the same fan-in calibration the layerwise and
+    chunked heads already had. Without it the output layer is initialized from
+    its own fan-in (the hypernetwork hidden width) and knows nothing about the
+    target layers it is emitting, so a 160-input critic layer and a 32-input
+    actor layer come out at the same scale. That made ``hyper_rf_init`` a silent
+    no-op for ``head_mode=flat``, which is exactly the all_weights baseline — so
+    the flag could only ever be tested on the compressed heads.
     """
 
-    def __init__(self, input_dim, hidden_dims, output_dim, dropout=0.0):
+    def __init__(
+        self,
+        input_dim,
+        hidden_dims,
+        output_dim,
+        dropout=0.0,
+        target_layout=None,
+        rf_init=False,
+        rf_hidden_gain=math.sqrt(2.0),
+        rf_output_gain=1.0,
+    ):
         super().__init__()
         dims = [input_dim] + list(hidden_dims) + [output_dim]
         layers = []
@@ -137,6 +155,37 @@ class MLPHyperNetwork(nn.Module):
                 layers.append(nn.Dropout(dropout))
         layers.append(nn.Linear(dims[-2], dims[-1]))
         self.net = nn.Sequential(*layers)
+
+        if rf_init:
+            if not target_layout:
+                raise ValueError('rf_init on a flat head requires a target_layout')
+            self._apply_rf_init(
+                LayerwiseHyperNetwork._normalize_layout(target_layout),
+                rf_hidden_gain,
+                rf_output_gain,
+            )
+
+    def _apply_rf_init(self, layout, hidden_gain, output_gain):
+        """Correctly scaled target init in the bias, small deviations in the weight.
+
+        Same construction as ChunkedHyperNetwork._init_rf_generator, applied per
+        target layer to the slice of the flat output the layer occupies.
+        """
+        output_layer = LayerwiseHyperNetwork._last_linear(self.net)
+        layer_count = len(layout)
+        with torch.no_grad():
+            output_layer.bias.zero_()
+            for layer_idx, (_, (out_dim, in_dim), weight_start, bias_start, bias_end) in enumerate(layout):
+                gain = float(output_gain if layer_idx == layer_count - 1 else hidden_gain)
+                target_weight = output_layer.weight.new_empty(out_dim, in_dim)
+                nn.init.orthogonal_(target_weight, gain=gain)
+                output_layer.bias[weight_start:bias_start].copy_(target_weight.reshape(-1))
+
+                deviation = output_layer.weight.new_empty(
+                    bias_end - weight_start, output_layer.weight.shape[1]
+                )
+                nn.init.orthogonal_(deviation, gain=gain / math.sqrt(max(1.0, float(in_dim))))
+                output_layer.weight[weight_start:bias_end].copy_(deviation)
 
     def forward(self, x):
         return self.net(x)
@@ -357,6 +406,16 @@ class ChunkedHyperNetwork(nn.Module):
     genuine inductive bias: the same function maps the meta vector to every
     row-block, differing only through the chunk code. It is far weaker than the
     bounded FiLM/head adapters, which cannot emit a full weight matrix at all.
+
+    ``generator_hidden`` controls how the meta vector and the chunk code are
+    combined. With the default 0 the generator is a single ``nn.Linear`` over
+    ``cat([h, c_j])``, so every chunk emits ``W_h h + W_c c_j + b``: the
+    agent-dependent term is *identical* in every chunk and the per-agent part of
+    the target matrix is one row-block tiled down the matrix. A positive value
+    inserts one hidden layer after the concatenation, which lets the chunk code
+    and the meta vector interact and gives each chunk its own agent-dependent
+    block. It is usually also *cheaper*, because the wide output head then reads
+    from ``generator_hidden`` units instead of ``trunk_dim + chunk_embed_dim``.
     """
 
     def __init__(
@@ -371,6 +430,7 @@ class ChunkedHyperNetwork(nn.Module):
         head_init_gain=1.0,
         chunk_size=8,
         chunk_embed_dim=16,
+        generator_hidden=0,
         rf_init=False,
         rf_mode='fan_in',
         rf_hidden_gain=math.sqrt(2.0),
@@ -389,6 +449,11 @@ class ChunkedHyperNetwork(nn.Module):
         if chunk_embed_dim <= 0:
             raise ValueError('hyper_chunk_embed_dim must be positive')
         self.chunk_embed_dim = chunk_embed_dim
+
+        generator_hidden = int(generator_hidden or 0)
+        if generator_hidden < 0:
+            raise ValueError('hyper_chunk_generator_hidden must be non-negative')
+        self.generator_hidden = generator_hidden
 
         kind = str(hypernet_type or 'mlp').lower()
         if kind not in ('linear', 'lin', 'mlp', 'nonlinear'):
@@ -425,7 +490,7 @@ class ChunkedHyperNetwork(nn.Module):
 
             embedding = nn.Parameter(torch.empty(n_chunks, chunk_embed_dim))
             nn.init.normal_(embedding, mean=0.0, std=1.0)
-            generator = nn.Linear(trunk_dim + chunk_embed_dim, gen_out, bias=use_bias)
+            generator = self._build_generator(trunk_dim + chunk_embed_dim, gen_out, use_bias)
 
             init_gain = float(head_init_gain)
             if rf_init:
@@ -445,16 +510,35 @@ class ChunkedHyperNetwork(nn.Module):
                 f"output_dim={self.output_dim}"
             )
 
+    def _build_generator(self, in_dim, out_dim, use_bias):
+        """One chunk generator: plain Linear, or Linear-ReLU-Linear when a hidden width is set."""
+        if self.generator_hidden <= 0:
+            return nn.Linear(in_dim, out_dim, bias=use_bias)
+
+        hidden = nn.Linear(in_dim, self.generator_hidden, bias=use_bias)
+        nn.init.orthogonal_(hidden.weight, gain=math.sqrt(2.0))
+        if hidden.bias is not None:
+            nn.init.zeros_(hidden.bias)
+        return nn.Sequential(
+            hidden,
+            nn.ReLU(),
+            nn.Linear(self.generator_hidden, out_dim, bias=use_bias),
+        )
+
     @staticmethod
     def _init_rf_generator(generator, rows, in_dim, gain):
         """Put a correctly scaled target-layer init in the bias, deviations in the weight."""
+        output_layer = LayerwiseHyperNetwork._last_linear(generator)
         with torch.no_grad():
-            default_weight = generator.weight.new_empty(rows, in_dim)
+            default_weight = output_layer.weight.new_empty(rows, in_dim)
             nn.init.orthogonal_(default_weight, gain=float(gain))
-            nn.init.orthogonal_(generator.weight, gain=float(gain) / math.sqrt(max(1.0, float(in_dim))))
-            if generator.bias is not None:
-                generator.bias.zero_()
-                generator.bias[: rows * in_dim].copy_(default_weight.reshape(-1))
+            nn.init.orthogonal_(
+                output_layer.weight,
+                gain=float(gain) / math.sqrt(max(1.0, float(in_dim))),
+            )
+            if output_layer.bias is not None:
+                output_layer.bias.zero_()
+                output_layer.bias[: rows * in_dim].copy_(default_weight.reshape(-1))
 
     def forward(self, x):
         hidden = self.trunk(x)
@@ -500,6 +584,7 @@ def build_hypernetwork(
     rf_output_gain=1.0,
     chunk_size=8,
     chunk_embed_dim=16,
+    chunk_generator_hidden=0,
 ):
     """
     Build a linear or MLP hypernetwork from config.
@@ -519,6 +604,7 @@ def build_hypernetwork(
             head_init_gain=head_init_gain,
             chunk_size=chunk_size,
             chunk_embed_dim=chunk_embed_dim,
+            generator_hidden=chunk_generator_hidden,
             rf_init=rf_init,
             rf_mode=rf_mode,
             rf_hidden_gain=rf_hidden_gain,
@@ -542,5 +628,14 @@ def build_hypernetwork(
     if kind in ('linear', 'lin'):
         return LinearHyperNetwork(input_dim, output_dim)
     if kind in ('mlp', 'nonlinear'):
-        return MLPHyperNetwork(input_dim, hidden_dims, output_dim, dropout=dropout)
+        return MLPHyperNetwork(
+            input_dim,
+            hidden_dims,
+            output_dim,
+            dropout=dropout,
+            target_layout=target_layout,
+            rf_init=rf_init,
+            rf_hidden_gain=rf_hidden_gain,
+            rf_output_gain=rf_output_gain,
+        )
     raise ValueError(f"Unknown hypernetwork type: {hypernet_type}")
