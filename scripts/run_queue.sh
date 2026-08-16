@@ -21,8 +21,14 @@ TARGET_JOBS="${TARGET_JOBS:-4}"
 POLL_SECONDS="${POLL_SECONDS:-300}"
 
 live_jobs() {
-    pgrep -fc '[r]un\.py --task tsc' 2>/dev/null || echo 0
+    # pgrep -c prints 0 and exits 1 when nothing matches, so a `|| echo 0`
+    # fallback would emit the count twice and break the numeric comparison.
+    local count
+    count=$(pgrep -fc '[r]un\.py --task tsc' 2>/dev/null)
+    echo "${count:-0}"
 }
+
+mkdir -p "$REPO/tmp"
 
 while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
