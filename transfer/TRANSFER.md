@@ -341,6 +341,7 @@ transfer from 1_0.pt (16 -> 48 intersections) | actor_hypernet=4/4 | topology_en
 - [x] B3 transfer 載入模式（`--transfer_checkpoint` / `--transfer_strict`）
 - [x] 單元測試 15 個 + 既有 48 個測試無退化
 - [x] 兩個 smoke run 打通 4x4 → 16x3 的完整路徑
+- [x] 實驗 runner `scripts/transfer_study.sh`（stage1 / zeroshot / finetune / smoke）
 - [ ] **zero-shot 評估模式**：目前要跑 transfer 的純評估，得靠 `--episodes` 很小的 run，
       應該加一個「只跑 TEST、不訓練」的路徑（`train_model: False` 已存在，未驗證）
 - [ ] 真正的實驗矩陣（見下）
@@ -363,3 +364,44 @@ transfer from 1_0.pt (16 -> 48 intersections) | actor_hypernet=4/4 | topology_en
 主要指標建議看 **fine-tune 效率**（達到某個 travel time 門檻所需的 episode 數），
 而不是 zero-shot 的絕對值——後者在 seed 之間會很吵，前者穩定得多，
 而且是 BRSC 文件裡已經定義好的協定，兩邊可以直接對得起來。
+
+---
+
+## 9. 部署與執行
+
+實驗用 `scripts/transfer_study.sh`，沿用 `chunk_study.sh` 的那套機制
+（每個 job 一個 symlink 工作目錄、`configs/` 實體複製避免 seed 改寫互相打架、
+`resilient_run.sh` 續跑）。
+
+```bash
+# 遠端主機上
+cd ~/tscRL_study
+git fetch origin && git checkout transfer-structural-condition
+
+# 容器內先驗證（約 2 秒）
+docker exec <container> bash -lc "cd /DaRL/LibSignal && python -m unittest transfer.test_transfer"
+
+# 看清單、不執行
+docker exec <container> bash -lc "cd /DaRL/LibSignal && bash scripts/transfer_study.sh list"
+
+# 1 episode 的 dispatcher 驗證（prefix 會加 smoke_，不會污染 stage1）
+docker exec <container> bash -lc "cd /DaRL/LibSignal && PARALLEL=2 bash scripts/transfer_study.sh smoke"
+
+# stage1 正式跑（6 個 job；PARALLEL 建議 <= 核心數 / 2.5）
+docker exec -d <container> bash -lc \
+  "cd /DaRL/LibSignal && PARALLEL=6 bash scripts/transfer_study.sh stage1 > tmp/transfer_stage1.log 2>&1"
+
+# stage1 跑完後
+docker exec <container> bash -lc "cd /DaRL/LibSignal && bash scripts/transfer_study.sh zeroshot"
+docker exec <container> bash -lc "cd /DaRL/LibSignal && bash scripts/transfer_study.sh finetune"
+```
+
+`zeroshot` / `finetune` 會在啟動前檢查每個 source checkpoint 是否存在，
+缺一個就整批拒絕啟動並列出缺哪些（exit 3），不會跑到一半才發現。
+
+stage1 的兩組 tag：
+
+| tag | 設定 | 角色 |
+|---|---|---|
+| `struct` | `--agent_embedding_mode structural` | 受測對象 |
+| `learned` | `--agent_embedding_mode learned` | 對照組；跨路網時 embedding 會被形狀過濾掉，等於餵隨機 code |
