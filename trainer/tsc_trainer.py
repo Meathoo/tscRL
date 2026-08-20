@@ -118,6 +118,10 @@ class TSCTrainer(BaseTrainer):
         self.agents = []
         agent = Registry.mapping['model_mapping'][Registry.mapping['command_mapping']['setting'].param['agent']](self.world, 0)
         print(agent)
+        # Structural conditioning / cross-network transfer leaves no other trace
+        # in the run log, so record what was actually reused (transfer/TRANSFER.md).
+        for line in getattr(agent, 'transfer_summary', lambda: [])():
+            self.logger.info(line)
         num_agent = int(len(self.world.intersections) / agent.sub_agents)
         self.agents.append(agent)  # initialized N agents for traffic light control
         for i in range(1, num_agent):

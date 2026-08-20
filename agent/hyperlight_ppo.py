@@ -22,6 +22,13 @@ from .rl_agent import RLAgent
 from . import utils
 from common.registry import Registry
 from generator import IntersectionPhaseGenerator, LaneVehicleGenerator
+from transfer import (
+    build_structural_features,
+    format_report as format_transfer_report,
+    load_for_transfer,
+    spec_id as structural_spec_id,
+    summarize_raw_features,
+)
 
 
 @Registry.register_model('hyperlight_spo')
@@ -368,6 +375,13 @@ class HyperLightPPOAgent(RLAgent):
         elif raw_embedding_mode == 'one_hot_topology':
             self.embedding_mode = 'one_hot'
             self.topology_aware_embedding = True
+        elif raw_embedding_mode in ('structural', 'structural_only'):
+            # Transfer mode: the meta vector is produced *only* from
+            # network-independent structural features, so it carries no
+            # per-intersection index and can be reused on another roadnet.
+            # See transfer/TRANSFER.md (blocker B1).
+            self.embedding_mode = 'structural'
+            self.topology_aware_embedding = True
         else:
             self.embedding_mode = raw_embedding_mode
 
@@ -379,13 +393,30 @@ class HyperLightPPOAgent(RLAgent):
         elif self.embedding_mode == 'one_hot':
             self.agent_embeddings = torch.eye(self.sub_agents, dtype=torch.float32, device=self.device)
             self.meta_dim = self.sub_agents
+        elif self.embedding_mode == 'structural':
+            self.agent_embeddings = None
+            self.meta_dim = int(cfg.get('agent_embedding_dim', 64))
         else:
             raise ValueError(f"Unknown agent_embedding_mode: {self.embedding_mode}")
 
         self.topology_feature_names = []
         self.topology_encoder = None
+        self.structural_spec = None
+        self.structural_raw_features = None
         if self.topology_aware_embedding:
-            topology_features, self.topology_feature_names = self._build_topology_features()
+            if self.embedding_mode == 'structural':
+                (
+                    topology_features,
+                    self.topology_feature_names,
+                    self.structural_raw_features,
+                ) = build_structural_features(
+                    self.world.intersections,
+                    road_lane_count=self._road_lane_count,
+                    neighbor_intersections=self._neighbor_intersections,
+                )
+                self.structural_spec = structural_spec_id()
+            else:
+                topology_features, self.topology_feature_names = self._build_topology_features()
             self.registered_topology_features = torch.tensor(
                 topology_features,
                 dtype=torch.float32,
@@ -674,6 +705,34 @@ class HyperLightPPOAgent(RLAgent):
         self._residual_episode_diagnostics = []
         self._last_abs_pressure = None
 
+        # Cross-network transfer: reuse a checkpoint trained on another roadnet.
+        # Runs last so every module already exists; the optimizer is rebuilt
+        # nowhere, because transfer deliberately starts from fresh Adam state.
+        transfer_checkpoint = cfg.get('transfer_checkpoint', None)
+        self.transfer_checkpoint = (
+            None if not transfer_checkpoint else str(transfer_checkpoint)
+        )
+        self.transfer_strict = bool(cfg.get('transfer_strict', False))
+        self.transfer_report = None
+        if self.transfer_checkpoint is not None:
+            self.transfer_report = load_for_transfer(
+                self,
+                self.transfer_checkpoint,
+                strict=self.transfer_strict,
+            )
+
+    def transfer_summary(self):
+        """Human-readable transfer/conditioning summary for the run log."""
+        lines = []
+        if self.embedding_mode == 'structural':
+            lines.append(f'structural conditioning spec: {self.structural_spec}')
+            lines.append(summarize_raw_features(self.structural_raw_features))
+        if self.transfer_report is not None:
+            lines.append(format_transfer_report(self.transfer_report))
+            for note in self.transfer_report['skipped_by_design']:
+                lines.append(f'  not transferred: {note}')
+        return lines
+
     def __repr__(self):
         critic_type = (
             f'centralized/{self.centralized_critic_mode}'
@@ -692,6 +751,7 @@ class HyperLightPPOAgent(RLAgent):
             f"/{self.hyper_chunk_embed_dim}/g{self.hyper_chunk_generator_hidden}, "
             f"objective={self.policy_objective}, "
             f"embedding={self.embedding_mode}, topology={self.topology_aware_embedding}, "
+            f"transfer={'-' if self.transfer_checkpoint is None else os.path.basename(self.transfer_checkpoint)}, "
             f"movement_encoder={self.movement_encoder_enabled}, "
             f"activation={self.activation}, "
             f"rf_init={self.actor_rf_init_config['rf_init']}, "
@@ -1826,6 +1886,11 @@ class HyperLightPPOAgent(RLAgent):
             return diagnostics
 
     def _agent_meta(self, batch_size):
+        if self.agent_embeddings is None:
+            # structural mode: no per-index table, the meta vector is a pure
+            # function of the intersection's structure (transfer/TRANSFER.md B1)
+            meta = self.topology_encoder(self.registered_topology_features)
+            return meta.unsqueeze(0).expand(batch_size, -1, -1)
         meta = self.agent_embeddings
         if self.topology_encoder is not None:
             meta = meta + self.topology_encoder(self.registered_topology_features)
@@ -2839,9 +2904,18 @@ class HyperLightPPOAgent(RLAgent):
             'embedding_mode': self.embedding_mode,
             'meta_dim': int(self.meta_dim),
             'topology_aware_embedding': self.topology_aware_embedding,
-            'topology_fingerprint': self._tensor_fingerprint(
-                getattr(self, 'registered_topology_features', None)
+            # Structural features are *meant* to differ between networks, so the
+            # value fingerprint is replaced by a fingerprint of the feature
+            # contract (names/order/scales).  Non-structural modes keep the old
+            # behaviour so existing checkpoints still validate unchanged.
+            'topology_fingerprint': (
+                None
+                if self.embedding_mode == 'structural'
+                else self._tensor_fingerprint(
+                    getattr(self, 'registered_topology_features', None)
+                )
             ),
+            'structural_spec': self.structural_spec,
             'actor_hypernet_type': str(self.hypernet_type),
             'hyper_actor_arch': self.actor_arch,
             'iru_actor_hidden_dim': (
@@ -2985,7 +3059,11 @@ class HyperLightPPOAgent(RLAgent):
             'architecture_version': 4,
             'architecture': self._architecture_signature(),
             'embedding_mode': self.embedding_mode,
-            'agent_embeddings': self.agent_embeddings.detach().cpu(),
+            'agent_embeddings': (
+                None
+                if self.agent_embeddings is None
+                else self.agent_embeddings.detach().cpu()
+            ),
             'hyper_residual': self.hyper_residual,
             'hyper_residual_mode': self.hyper_residual_mode,
             'hyper_lora_actor_rank': self.hyper_lora_actor_rank,
@@ -3047,7 +3125,7 @@ class HyperLightPPOAgent(RLAgent):
             )
         if self.base_value is not None and 'base_value' in checkpoint:
             self.base_value.load_state_dict(checkpoint['base_value'])
-        if isinstance(self.agent_embeddings, nn.Parameter) and 'agent_embeddings' in checkpoint:
+        if isinstance(self.agent_embeddings, nn.Parameter) and checkpoint.get('agent_embeddings') is not None:
             self.agent_embeddings.data.copy_(checkpoint['agent_embeddings'].to(self.device))
         if self.topology_encoder is not None and 'topology_encoder' in checkpoint:
             self.topology_encoder.load_state_dict(checkpoint['topology_encoder'])

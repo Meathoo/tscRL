@@ -46,8 +46,18 @@ model:
   iru_layer_norm: True
   centralized_critic: False
   centralized_critic_mode: pooled # pooled | concat | graph
-  agent_embedding_mode: learned   # one_hot | learned | topology | learned_topology | one_hot_topology
-  agent_embedding_dim: 64         # only used when agent_embedding_mode=learned
+  agent_embedding_mode: learned   # one_hot | learned | topology | learned_topology | one_hot_topology | structural
+  agent_embedding_dim: 64         # used when agent_embedding_mode=learned or structural
+
+  # --- cross-network transfer (transfer/TRANSFER.md) -------------------------
+  # agent_embedding_mode=structural conditions the hypernetwork only on
+  # network-independent structural features (lane counts, degrees, phase count,
+  # boundary ratio), so the whole meta path can be reused on another roadnet.
+  # transfer_checkpoint points at a checkpoint trained on a DIFFERENT network:
+  # shape-compatible weights are copied, per-index embeddings and the optimizer
+  # are not.  null keeps every existing baseline byte-identical.
+  transfer_checkpoint: null
+  transfer_strict: False
 
   # Optional canonical lane-link movement encoder. It is local-only for the
   # decentralized actor; raw observations remain in the PPO rollout buffer.

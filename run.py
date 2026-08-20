@@ -42,8 +42,17 @@ parser.add_argument(
     '--agent_embedding_mode',
     type=str,
     default=None,
-    choices=['one_hot', 'learned', 'topology', 'learned_topology', 'one_hot_topology'],
-    help='override model.agent_embedding_mode',
+    choices=[
+        'one_hot',
+        'learned',
+        'topology',
+        'learned_topology',
+        'one_hot_topology',
+        'structural',
+    ],
+    help='override model.agent_embedding_mode; "structural" drops the '
+         'per-intersection index table so the meta vector transfers across '
+         'road networks (see transfer/TRANSFER.md)',
 )
 parser.add_argument('--hypernet_type', type=str, default=None, choices=['mlp', 'linear'],
                     help='override model hypernetwork type')
@@ -137,6 +146,13 @@ parser.add_argument('--hyper_rf_init', type=str2bool, nargs='?', const=True, def
                     help='override model.hyper_rf_init (fan-in calibrated generator init)')
 parser.add_argument('--save_rate', type=int, default=None,
                     help='override logger.save_rate (checkpoint every N episodes)')
+parser.add_argument('--transfer_checkpoint', type=str, default=None,
+                    help='path to a checkpoint trained on ANOTHER road network; '
+                         'shape-compatible weights are reused, per-index embeddings '
+                         'and optimizer state are not (see transfer/TRANSFER.md)')
+parser.add_argument('--transfer_strict', type=str2bool, nargs='?', const=True, default=None,
+                    help='fail instead of warn when a transfer checkpoint leaves any '
+                         'parameter uninitialised')
 
 args = parser.parse_args()
 os.environ["CUDA_VISIBLE_DEVICES"] = args.ngpu
