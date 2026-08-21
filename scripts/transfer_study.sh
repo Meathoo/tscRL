@@ -34,6 +34,9 @@ STAGE="${1:-list}"
 
 AGENT="${AGENT:-hyperlight_mappo}"
 PARALLEL="${PARALLEL:-3}"
+# cityflow | sumo. Ingolstadt21 (the only heterogeneous network available) lives
+# in the SUMO world: WORLD=sumo NETWORK=sumo1x21.
+WORLD="${WORLD:-cityflow}"
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-2}"
@@ -41,7 +44,7 @@ export SIM_THREADS="${SIM_THREADS:-2}"
 SAVE_RATE="${SAVE_RATE:-25}"
 WORKROOT="${WORKROOT:-$REPO/tmp/transfer_study}"
 STAMP_DIR="$WORKROOT/_status"
-OUTROOT="${OUTROOT:-$REPO/data/output_data/tsc/cityflow_${AGENT}}"
+OUTROOT="${OUTROOT:-$REPO/data/output_data/tsc/${WORLD}_${AGENT}}"
 
 # Each entry: <tag>|<extra run.py args>
 #
@@ -122,14 +125,18 @@ run_job() {
             # episode >= EPISODES".  It would therefore call every successful
             # evaluation an interruption and re-run it MAX_RETRIES times, so
             # eval-only jobs call run.py directly instead.
-            ( cd "$dir" && python3 run.py --task tsc --agent "$AGENT" --world cityflow \
+            ( cd "$dir" && python3 run.py --task tsc --agent "$AGENT" --world "$WORLD" \
                 --network "$network" --prefix "$prefix" --seed "$seed" \
                 --thread_num "$SIM_THREADS" $extra >> "_eval_${prefix}.log" 2>&1 )
             status=$?
             ;;
         *)
-            RESILIENT_NETWORK="$network" RESILIENT_AGENT="$AGENT" RESILIENT_EPISODES="$episodes" \
-                "$dir/resilient_run.sh" "$prefix" "$seed" \
+            # resilient_run_world.sh rather than resilient_run.sh: the latter
+            # hardcodes --world cityflow, and it is mid-run on the long 7x28
+            # jobs, where editing it in place would corrupt a live run.
+            RESILIENT_WORLD="$WORLD" RESILIENT_NETWORK="$network" \
+                RESILIENT_AGENT="$AGENT" RESILIENT_EPISODES="$episodes" \
+                "$dir/scripts/resilient_run_world.sh" "$prefix" "$seed" \
                 --episodes "$episodes" --save_rate "$SAVE_RATE" --thread_num "$SIM_THREADS" $extra
             status=$?
             ;;
