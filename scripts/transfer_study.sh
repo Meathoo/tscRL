@@ -13,6 +13,8 @@
 #   zeroshot  evaluate the stage1 checkpoints on 16x3 / 7x28 without training.
 #   finetune  50-episode fine-tune of the stage1 checkpoints on 16x3, plus the
 #             from-scratch control.
+#   compress  the two chunked cells of a {flat, chunked} x {structural, learned}
+#             square; stage1's own runs are the two flat cells.
 #
 # Usage (inside the container):
 #   scripts/transfer_study.sh list                # print the job list and exit
@@ -20,9 +22,13 @@
 #   scripts/transfer_study.sh smoke               # 1 episode per config
 #   scripts/transfer_study.sh zeroshot            # needs stage1 checkpoints
 #   scripts/transfer_study.sh finetune            # needs stage1 checkpoints
+#   scripts/transfer_study.sh compress            # chunked vs flat, same network
+#
+# Extra seeds for an existing stage are just a SEEDS override, e.g.
+#   WORLD=sumo NETWORK=sumo1x21 SEEDS="3 4" scripts/transfer_study.sh stage1
 #
 # Environment overrides:
-#   PARALLEL=6 SEEDS="0 1 2" EPISODES=250 NETWORK=cityflow4x4
+#   PARALLEL=6 SEEDS="0 1 2" EPISODES=250 NETWORK=cityflow4x4 WORLD=cityflow
 #   TARGETS="cityflow16x3 cityflow7x28" FT_EPISODES=50
 #
 # PARALLEL: one job uses ~2.5 cores, so keep PARALLEL <= cores / 2.5.
@@ -71,6 +77,19 @@ case "$STAGE" in
         EPISODES="${EPISODES:-1}"
         PARALLEL="${PARALLEL:-1}"
         SAVE_RATE="${SAVE_RATE:-1}"
+        ;;
+    compress)
+        # Completes a {flat, chunked} x {structural, learned} square.  The two
+        # flat cells are stage1's own runs -- stage1's `struct` is flat+
+        # structural and `learned` is flat+learned (hyper_head_mode defaults to
+        # flat) -- so only the two chunked cells are new here.
+        NETWORK="${NETWORK:-cityflow4x4}"
+        SEEDS="${SEEDS:-0 1 2}"
+        EPISODES="${EPISODES:-250}"
+        CONFIGS=(
+            "c8struct|--agent_embedding_mode structural --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16"
+            "c8learned|--agent_embedding_mode learned --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16"
+        )
         ;;
     zeroshot|finetune)
         NETWORK="${NETWORK:-cityflow4x4}"   # the SOURCE network of the checkpoints
@@ -156,7 +175,7 @@ fi
 
 JOBS=()
 case "$STAGE" in
-    stage1|list|smoke)
+    stage1|list|smoke|compress)
         # smoke gets its own prefix so a 1-episode validation run can never be
         # mistaken for -- or resumed as -- a real stage1 run.
         name_prefix=''
