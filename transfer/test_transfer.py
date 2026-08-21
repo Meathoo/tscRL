@@ -26,27 +26,66 @@ from transfer import (
 )
 
 
-def _road(lanes):
-    return {'lanes': list(range(lanes))}
+def _road(lanes, road_id):
+    return {'id': road_id, 'lanes': list(range(lanes))}
 
 
 class _Intersection:
-    def __init__(self, inter_id, in_lanes, out_lanes, phases, neighbors):
+    """Stub intersection carrying only what the feature builder reads.
+
+    Roads are identified the way CityFlow does it (dicts with an id); the SUMO
+    path, where roads are plain id strings resolved through
+    ``inter.road_lane_mapping``, is covered by the agent's ``_lanes_for_road``
+    rather than here.
+    """
+
+    def __init__(self, inter_id, phases, in_road_ids, out_road_ids, lanes_per_road=3):
         self.id = inter_id
-        # One road per approach; 3 lanes each is the CityFlow grid layout.
-        self.in_roads = [_road(3) for _ in range(in_lanes // 3)]
-        self.out_roads = [_road(3) for _ in range(out_lanes // 3)]
+        self.in_roads = [_road(lanes_per_road, rid) for rid in in_road_ids]
+        self.out_roads = [_road(lanes_per_road, rid) for rid in out_road_ids]
         self.phases = list(range(phases))
-        self.startlanes = list(range(in_lanes))
-        self.neighbors = neighbors
+        self.startlanes = list(range(lanes_per_road * len(in_road_ids)))
 
 
 def _features(intersections):
     return build_structural_features(
         intersections,
-        road_lane_count=lambda road: len(road.get('lanes', [])),
-        neighbor_intersections=lambda inter: inter.neighbors,
+        lanes_for_road=lambda inter, road: list(road.get('lanes', [])),
     )
+
+
+def _network(filler_count, probe_neighbours=2):
+    """A 4-way 'probe' intersection embedded in a network of a chosen size.
+
+    ``probe`` always has the same shape and the same number of *controlled*
+    neighbours; only the surrounding population changes. Filler intersections
+    deliberately vary in size so the per-network mean/std move.
+    """
+    in_ids, out_ids = [], []
+    for i in range(4):
+        if i < probe_neighbours:
+            in_ids.append(f'r_n{i}_probe')
+            out_ids.append(f'r_probe_n{i}')
+        else:
+            in_ids.append(f'r_ext{i}_probe')
+            out_ids.append(f'r_probe_ext{i}')
+
+    inters = [_Intersection('probe', 8, in_ids, out_ids)]
+    for i in range(probe_neighbours):
+        inters.append(
+            _Intersection(f'n{i}', 8, [f'r_probe_n{i}'], [f'r_n{i}_probe'])
+        )
+    for j in range(filler_count):
+        inters.append(
+            _Intersection(
+                f'f{j}',
+                2 + (j % 6),
+                [f'r_f{j}_in'],
+                [f'r_f{j}_out'],
+                lanes_per_road=1 + (j % 4),
+            )
+        )
+    return inters
 
 
 def _zscore(raw):
@@ -67,45 +106,46 @@ class StructuralFeatureTests(unittest.TestCase):
     def test_same_intersection_gets_same_vector_in_different_networks(self):
         """The property the whole transfer story depends on.
 
-        A "12 incoming lanes / 9 phases / 4 controlled neighbours" intersection
-        must map to the same conditioning vector no matter what the rest of the
-        network looks like.
+        A given intersection must map to the same conditioning vector no matter
+        what the rest of the network looks like.
         """
-        probe = lambda: _Intersection('probe', 12, 12, 9, {'a', 'b', 'c', 'd'})
-
-        small = [probe()] + [_Intersection('x', 6, 6, 4, {'a'}) for _ in range(3)]
-        large = [probe()] + [
-            _Intersection(f'y{i}', 15, 15, 12, {'a', 'b'}) for i in range(40)
-        ]
-
-        small_scaled, _, small_raw = _features(small)
-        large_scaled, _, large_raw = _features(large)
+        small_scaled, _, small_raw = _features(_network(2))
+        large_scaled, _, large_raw = _features(_network(40))
 
         np.testing.assert_allclose(small_scaled[0], large_scaled[0], rtol=0, atol=0)
 
         # ...and the legacy per-network z-score does NOT have that property,
         # which is exactly why this module exists.
-        legacy_small = _zscore(small_raw)
-        legacy_large = _zscore(large_raw)
         self.assertFalse(
-            np.allclose(legacy_small[0], legacy_large[0]),
+            np.allclose(_zscore(small_raw)[0], _zscore(large_raw)[0]),
             'legacy z-score unexpectedly stable; the regression this guards is gone',
         )
 
+    def test_neighbours_come_from_shared_roads(self):
+        """Adjacency is derived, not declared, so it works in both worlds."""
+        _, _, raw = _features(_network(5, probe_neighbours=3))
+        neighbour_idx = FEATURE_NAMES.index('neighbor_count')
+        ratio_idx = FEATURE_NAMES.index('controlled_neighbor_ratio')
+        self.assertEqual(raw[0, neighbour_idx], 3.0)
+        # 3 of the probe's 4 approaches lead to a controlled intersection
+        self.assertAlmostEqual(float(raw[0, ratio_idx]), 0.75, places=6)
+
+        _, _, isolated = _features(_network(5, probe_neighbours=0))
+        self.assertEqual(isolated[0, neighbour_idx], 0.0)
+
     def test_features_are_finite_and_scaled(self):
-        scaled, names, raw = _features(
-            [_Intersection('a', 12, 12, 9, {'b'}), _Intersection('b', 3, 3, 2, set())]
-        )
-        self.assertEqual(scaled.shape, (2, FEATURE_DIM))
+        scaled, names, raw = _features(_network(3))
+        self.assertEqual(scaled.shape, (6, FEATURE_DIM))
         self.assertEqual(names, list(FEATURE_NAMES))
         self.assertTrue(np.isfinite(scaled).all())
         self.assertTrue((np.abs(scaled) <= 3.0).all(), scaled)
-        # raw keeps the physical quantity for logging
+        # raw keeps the physical quantity for logging: 4 approaches x 3 lanes
         self.assertEqual(raw[0, FEATURE_NAMES.index('in_lane_count')], 12.0)
 
     def test_single_intersection_network_does_not_collapse(self):
         """A 1-intersection network z-scores to all-zeros; fixed scales do not."""
-        scaled, _, raw = _features([_Intersection('a', 12, 12, 9, set())])
+        lone = [_Intersection('a', 8, ['r_x_a'], ['r_a_x'])]
+        scaled, _, raw = _features(lone)
         self.assertTrue(np.any(scaled != 0.0))
         self.assertTrue(np.all(_zscore(raw) == 0.0))
 

@@ -411,8 +411,7 @@ class HyperLightPPOAgent(RLAgent):
                     self.structural_raw_features,
                 ) = build_structural_features(
                     self.world.intersections,
-                    road_lane_count=self._road_lane_count,
-                    neighbor_intersections=self._neighbor_intersections,
+                    lanes_for_road=self._lanes_for_road,
                 )
                 self.structural_spec = structural_spec_id()
             else:

@@ -61,27 +61,75 @@ def spec_id():
     return f"structural_v{SPEC_VERSION}:" + ','.join(FEATURE_NAMES)
 
 
-def build_structural_features(intersections, *, road_lane_count, neighbor_intersections):
+def _road_key(road):
+    """Identity of a road, in either world.
+
+    CityFlow hands the agent roadnet dicts; the SUMO world hands it plain road-id
+    strings. Both need a hashable key so shared roads can be matched.
+    """
+    if isinstance(road, dict):
+        return road.get('id')
+    return road
+
+
+def _neighbour_sets(intersections):
+    """Map each intersection to the other *controlled* ones it shares a road with.
+
+    Deriving this from shared roads rather than from a roadnet dict field is what
+    makes it work on both worlds: an intersection j is a neighbour of i when some
+    road leaves j and enters i (or the reverse).
+    """
+    in_keys = []
+    out_keys = []
+    producers = {}
+    consumers = {}
+    for idx, inter in enumerate(intersections):
+        ins = {_road_key(r) for r in (getattr(inter, 'in_roads', []) or [])}
+        outs = {_road_key(r) for r in (getattr(inter, 'out_roads', []) or [])}
+        ins.discard(None)
+        outs.discard(None)
+        in_keys.append(ins)
+        out_keys.append(outs)
+        for key in outs:
+            producers.setdefault(key, set()).add(idx)
+        for key in ins:
+            consumers.setdefault(key, set()).add(idx)
+
+    neighbours = []
+    for idx in range(len(intersections)):
+        found = set()
+        for key in in_keys[idx]:
+            found |= producers.get(key, set())
+        for key in out_keys[idx]:
+            found |= consumers.get(key, set())
+        found.discard(idx)
+        neighbours.append(found)
+    return neighbours
+
+
+def build_structural_features(intersections, *, lanes_for_road):
     """Build ``[n_intersections, FEATURE_DIM]`` network-independent features.
 
-    ``road_lane_count`` and ``neighbor_intersections`` are passed in as callables
-    (the agent already owns those helpers) so this module stays free of any
-    simulator/world imports and can be unit tested with plain stubs.
+    ``lanes_for_road(inter, road)`` is passed in as a callable -- the agent's
+    ``_lanes_for_road``, which already resolves a road to its lane ids in both
+    the CityFlow and SUMO worlds -- so this module stays free of any simulator
+    imports and can be unit tested with plain stubs.
 
     Returns ``(scaled, names, raw)``.  ``raw`` is kept for logging: it is the
     unscaled physical quantity, which is what a human wants to read in a log.
     """
+    neighbours = _neighbour_sets(intersections)
     rows = []
-    for inter in intersections:
+    for idx, inter in enumerate(intersections):
         in_roads = getattr(inter, 'in_roads', []) or []
         out_roads = getattr(inter, 'out_roads', []) or []
 
-        in_lane_count = float(sum(road_lane_count(road) for road in in_roads))
-        out_lane_count = float(sum(road_lane_count(road) for road in out_roads))
+        in_lane_count = float(sum(len(lanes_for_road(inter, road)) for road in in_roads))
+        out_lane_count = float(sum(len(lanes_for_road(inter, road)) for road in out_roads))
         in_degree = float(len(in_roads))
         out_degree = float(len(out_roads))
         node_degree = in_degree + out_degree
-        neighbor_count = float(len(neighbor_intersections(inter)))
+        neighbor_count = float(len(neighbours[idx]))
         phase_count = float(max(1, len(getattr(inter, 'phases', []) or [])))
         startlane_count = float(len(getattr(inter, 'startlanes', []) or []))
 
