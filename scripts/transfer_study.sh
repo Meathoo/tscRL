@@ -114,10 +114,26 @@ run_job() {
     mkdir -p "$STAMP_DIR"
 
     echo "[$(date '+%F %T')] start $prefix  ($extra)"
-    RESILIENT_NETWORK="$network" RESILIENT_AGENT="$AGENT" RESILIENT_EPISODES="$episodes" \
-        "$dir/resilient_run.sh" "$prefix" "$seed" \
-        --episodes "$episodes" --save_rate "$SAVE_RATE" --thread_num "$SIM_THREADS" $extra
-    local status=$?
+    local status
+    case "$extra" in
+        *"--train_model False"*)
+            # Evaluation-only job: no training means no checkpoint is ever
+            # written, and resilient_run.sh judges success by "latest checkpoint
+            # episode >= EPISODES".  It would therefore call every successful
+            # evaluation an interruption and re-run it MAX_RETRIES times, so
+            # eval-only jobs call run.py directly instead.
+            ( cd "$dir" && python3 run.py --task tsc --agent "$AGENT" --world cityflow \
+                --network "$network" --prefix "$prefix" --seed "$seed" \
+                --thread_num "$SIM_THREADS" $extra >> "_eval_${prefix}.log" 2>&1 )
+            status=$?
+            ;;
+        *)
+            RESILIENT_NETWORK="$network" RESILIENT_AGENT="$AGENT" RESILIENT_EPISODES="$episodes" \
+                "$dir/resilient_run.sh" "$prefix" "$seed" \
+                --episodes "$episodes" --save_rate "$SAVE_RATE" --thread_num "$SIM_THREADS" $extra
+            status=$?
+            ;;
+    esac
     echo "$status" > "$STAMP_DIR/$prefix.exit"
     echo "[$(date '+%F %T')] done  $prefix (exit=$status)"
     return $status
