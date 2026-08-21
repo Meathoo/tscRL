@@ -146,6 +146,9 @@ parser.add_argument('--hyper_rf_init', type=str2bool, nargs='?', const=True, def
                     help='override model.hyper_rf_init (fan-in calibrated generator init)')
 parser.add_argument('--save_rate', type=int, default=None,
                     help='override logger.save_rate (checkpoint every N episodes)')
+parser.add_argument('--train_model', type=str2bool, nargs='?', const=True, default=None,
+                    help='override model.train_model; False evaluates the agent as constructed '
+                         '(with --transfer_checkpoint this is a true zero-shot evaluation)')
 parser.add_argument('--transfer_checkpoint', type=str, default=None,
                     help='path to a checkpoint trained on ANOTHER road network; '
                          'shape-compatible weights are reused, per-index embeddings '

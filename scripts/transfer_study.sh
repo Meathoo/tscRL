@@ -148,7 +148,10 @@ case "$STAGE" in
         done
         ;;
     zeroshot)
-        # train_model False keeps run.py on the evaluation path only.
+        # --train_model False is what makes this a *zero-shot* evaluation: with
+        # load_model also false, task.py calls trainer.test(drop_load=True), so
+        # the agent is evaluated exactly as the transfer checkpoint left it,
+        # with no gradient step taken on the target network.
         for entry in "${CONFIGS[@]}"; do
             tag="${entry%%|*}"
             extra="${entry#*|}"
@@ -156,7 +159,7 @@ case "$STAGE" in
                 ckpt="$(source_checkpoint "$tag" "$seed")"
                 for target in $TARGETS; do
                     prefix="zs_${tag}_${NETWORK#cityflow}to${target#cityflow}_seed${seed}"
-                    JOBS+=("$target|1|$prefix|$seed|$extra --transfer_checkpoint $ckpt")
+                    JOBS+=("$target|1|$prefix|$seed|$extra --train_model False --transfer_checkpoint $ckpt")
                 done
             done
         done

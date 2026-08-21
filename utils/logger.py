@@ -177,6 +177,7 @@ def build_config(args):
         'hyper_chunk_generator_hidden': getattr(args, 'hyper_chunk_generator_hidden', None),
         'agent_embedding_dim': getattr(args, 'agent_embedding_dim', None),
         'hyper_rf_init': getattr(args, 'hyper_rf_init', None),
+        'train_model': getattr(args, 'train_model', None),
         'transfer_checkpoint': getattr(args, 'transfer_checkpoint', None),
         'transfer_strict': getattr(args, 'transfer_strict', None),
         'hyper_hidden': parse_hidden_dims(getattr(args, 'hyper_hidden', None)),
