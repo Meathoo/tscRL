@@ -2,7 +2,7 @@
 
 這份檔案記錄「這台機器上的 LibSignal 工作目錄」目前的整理狀態、研究進度、以及在**另一台機器 `git pull` 之後要怎麼接續使用**。目標是讓另一台機器 clone/pull 下來後，程式碼與筆記完整、`docker` container 能跑，且看得懂目前實驗做到哪裡。
 
-最後更新：2026-08-13（本地時間）。
+最後更新：2026-08-22（本地時間）。跨路網 transfer 那條線的進度在 §6，程式細節在 `transfer/TRANSFER.md`。
 
 ---
 
@@ -104,3 +104,86 @@ python run.py --task tsc --agent hyperlight_mappo --world cityflow --network cit
 
 - `avg_compare_outputs/` 內混了「已追蹤的舊結果快照」與「規則排除的新版 `paper_table_*.csv`」，格式演進中，之後如果新格式穩定了可以考慮把追蹤規則也一併更新。
 - `monitor_training.sh`、被移出版控的 `HYPEMARL.pdf` 目前都還留在本地檔案系統，沒有被刪除，如果確定不需要了可以手動清掉。
+
+---
+
+## 6. 跨路網 transfer（分支 `transfer-structural-condition`，2026-08-20 起）
+
+程式設計、注意事項、特徵規格表在 **`transfer/TRANSFER.md`**，這裡只記進度、數字與機器分配。
+
+### 6.1 這條線在做什麼
+
+把 hypernetwork 的 condition 從「路口編號」換成「**與路網無關的結構特徵**」（12 維：車道數、進出度、相位數、邊界比等，用固定常數正規化），再加一個只搬形狀相容權重的 `transfer` 載入模式，讓「在小路網訓練、在大路網使用」變成可能。
+
+新增 `transfer/` 套件（`structural.py` / `checkpoint.py` / `test_transfer.py` / `TRANSFER.md`），`agent/hyperlight_ppo.py` 只加 5 個 hook point，**預設行為完全不變**，`agent_embedding_mode: structural` 與 `--transfer_checkpoint` 都是 opt-in。
+
+### 6.2 已完成的實驗與結果
+
+**(a) 4x4 source 訓練（250 ep × 3 seed）** — 同質路網上兩者持平，但 structural 早期收斂明顯較快：
+
+| | last TEST | ep25 | ep50 | ep100 |
+|---|---:|---:|---:|---:|
+| structural | 314.28 ± 0.47 | 713.1 | 325.8 | 317.6 |
+| learned（對照） | 314.94 ± 0.86 | 802.6 | 478.9 | 323.9 |
+
+`learned` 重現了文件記載的 4x4 all_weights 基準（314.75 ± 0.40），代表這台新機器的環境與舊資料可以接得起來。
+
+**(b) Zero-shot（0 個梯度更新，直接評估）**
+
+| 來源→目標 | structural | learned | 隨機初始化 | 訓練滿 250ep |
+|---|---:|---:|---:|---:|
+| 4x4 → 16x3 | **226.67 ± 23.59** | 308.24 ± 22.71 | 1769.9 | 178.6–180.4 |
+| 4x4 → 7x28 | 1388.35 ± 25.96 | 1408.37 ± 9.13 | 1765.5 | 1231.2 |
+
+16x3 上 structural 走完「隨機→完整訓練」距離的 **97.1%**，三個 seed 與 learned 完全不重疊。
+**7x28 上兩者完全重疊、不顯著**——這是目前這條線最明確的破口。
+
+**(c) 16x3 fine-tune（50 ep × 3 seed）** — 50 個 episode 追平從零訓練 250 個：
+
+| | ep0 | ep10 | ep25 | ep45 |
+|---|---:|---:|---:|---:|
+| structural | 221.0 | 191.0 | 183.8 | 181.4 |
+| learned | 318.7 | 247.0 | 193.9 | 182.0 |
+| from-scratch | 1643.5 | 1591.5 | 1515.5 | 1354.5 |
+
+structural 的優勢是**速度**不是終點（跌破 190 約在 ep 10–15，learned 要 ep 20–25，ep45 收斂到同一點）。
+
+**(d) Ingolstadt21（250 ep × 3 seed）— 這條線最關鍵的一格**
+
+CityFlow 的三個路網（4x4 / 16x3 / 7x28）受控路口**結構完全同質**（全部 12 in-lane、8 action），所以靜態結構 condition 在那裡幾乎是常數向量。Ingolstadt21 是唯一結構會變的網（`in_lane_count` 4–14、`phase_count` 2–4）：
+
+| | last (mean ± std) | best (mean ± std) |
+|---|---:|---:|
+| **structural** | **218.67 ± 19.67** | **199.94 ± 1.50** |
+| learned | 271.24 ± 23.37 | 220.26 ± 15.75 |
+
+結構特徵真的會變的時候 structural 贏 52.6 秒（19.4%），三個 seed 不重疊；best 的標準差差了十倍（1.50 vs 15.75），逐路口自由 embedding 在異質路口上明顯學不穩。
+
+**結論**：靜態結構 condition 不是沒用，是**只在異質路網上有用**；在同質路網上它的價值是「可遷移」而非「更好」。
+
+### 6.3 執行中 / 待辦
+
+- **執行中**：7x28 fine-tune（.237）、Ingolstadt 5-seed 擴充 + `{flat, chunked} × {structural, learned}` 2×2（.249）、`awrf_7x28` 收尾（本機）。
+- **待辦**：動態車流 condition（arrival rate / turn ratio / queue slope 的慢速 EMA，BRSC v2 的 Dynamic Traffic-Role FiLM）；B4（movement encoder + 排列不變 phase head）；從 BRSC-MAPPO 移植 boundary randomization 與 scale-consistency loss。
+- 動態 condition 的實作注意事項：condition 一變成 state-dependent，就必須把特徵存進 rollout buffer 並穿過 `remember` / `_rollout_tensors` / `_policy_value`，否則 PPO 的 log-prob 對不上——**不會報錯，只會靜靜地算錯 ratio**。
+
+### 6.4 機器分配（三台）
+
+| 機器 | 帳號 / 容器 | 規格 | 角色 |
+|---|---|---|---|
+| 本機（Windows） | 容器 `tscRL`，mount `C:\tscRL` | 12 核 | chunked study（aw/rf/g64 系列）**整條不外流** |
+| 140.117.172.237 | `m143040017`，容器 `tscrl_transfer`，`~/tscRL` | 16 核、2× 2080Ti（驅動正常） | transfer 實驗（stage1 / zeroshot / finetune） |
+| 140.117.172.249 | `m143040017`，容器 `tscrl_ingolstadt`，`~/tscRL_transfer` | 20 核（**與他人共用**） | Ingolstadt 系列 |
+
+幾個踩過的坑，換機器接手前先看：
+
+1. **.237 的 `~/.ssh/config` 把該 IP 對應到 `ailab`**，不是 `m143040017`；兩台機器的 hostname 又都叫 `ailab-2080Tix2`，很容易混淆。ssh 時帳號要寫明。
+2. **.249 是共用機器**，另一位使用者的 SUMO 工作常佔掉 10 核以上，開工前先 `ps -eo pcpu,user,comm --sort=-pcpu | head` 看一下，必要時把 `OMP_NUM_THREADS` 壓到 1。
+3. **.249 上另外 clone 了 `~/tscRL_transfer` 配獨立容器**，刻意不動原本的 `~/tscRL_study`（那邊有 `run_queue.sh` 的未提交修改）。
+4. **跨機器的數字不可直接比較**：同一設定同一 seed（Ingolstadt aw / seed 0）在本機是 258.83、在 .249 是 297.83，差 38.9 秒。同一張比較表的所有格子要在同一台機器上跑完。
+5. **不要編輯執行中的 shell 腳本**：bash 會按位元組偏移重讀，改 `resilient_run.sh` 會弄壞正在跑的長任務。需要改行為時另開檔案（`scripts/resilient_run_world.sh` 就是這樣來的）。
+
+### 6.5 新增的執行腳本
+
+- `scripts/transfer_study.sh` — stage `stage1` / `zeroshot` / `finetune` / `compress` / `smoke`；`WORLD=sumo NETWORK=sumo1x21` 切到 Ingolstadt；加 seed 只要 `SEEDS="3 4"`。
+- `scripts/resilient_run_world.sh` — `resilient_run.sh` 的泛化版（world 可選）。純評估的 job（`--train_model False`）不走這支，因為它用「checkpoint 有沒有到目標 episode」判斷完成，而評估不寫 checkpoint，會無限重試。
