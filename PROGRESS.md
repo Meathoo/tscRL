@@ -173,14 +173,15 @@ CityFlow 的三個路網（4x4 / 16x3 / 7x28）受控路口**結構完全同質*
 |---|---|---|---|
 | 本機（Windows） | 容器 `tscRL`，mount `C:\tscRL` | 12 核 | chunked study（aw/rf/g64 系列）**整條不外流** |
 | 140.117.172.237 | `m143040017`，容器 `tscrl_transfer`，`~/tscRL` | 16 核、2× 2080Ti（驅動正常） | transfer 實驗（stage1 / zeroshot / finetune） |
-| 140.117.172.249 | `m143040017`，容器 `tscrl_ingolstadt`，`~/tscRL_transfer` | 20 核（**與他人共用**） | Ingolstadt 系列 |
+| 140.117.172.232 | `m143040017`，容器 `tscrl_ingolstadt`，`~/tscRL_transfer` | **32 核**、60G、1.6T、獨占 | Ingolstadt 系列（2026-08-22 起） |
+| 140.117.172.249 | `m143040017`，容器 `tscrl_ingolstadt`，`~/tscRL_transfer` | 20 核（**與他人共用**） | 已於 2026-08-22 停用並歸還，只留早期 3-seed 結果 |
 
 幾個踩過的坑，換機器接手前先看：
 
-1. **.237 的 `~/.ssh/config` 把該 IP 對應到 `ailab`**，不是 `m143040017`；兩台機器的 hostname 又都叫 `ailab-2080Tix2`，很容易混淆。ssh 時帳號要寫明。
-2. **.249 是共用機器**，另一位使用者的 SUMO 工作常佔掉 10 核以上，開工前先 `ps -eo pcpu,user,comm --sort=-pcpu | head` 看一下，必要時把 `OMP_NUM_THREADS` 壓到 1。
-3. **.249 上另外 clone 了 `~/tscRL_transfer` 配獨立容器**，刻意不動原本的 `~/tscRL_study`（那邊有 `run_queue.sh` 的未提交修改）。
-4. **跨機器的數字不可直接比較**：同一設定同一 seed（Ingolstadt aw / seed 0）在本機是 258.83、在 .249 是 297.83，差 38.9 秒。同一張比較表的所有格子要在同一台機器上跑完。
+1. **ssh 一定要寫明帳號**。`~/.ssh/config` 把 `.237` 對應到 `ailab`，`.232` 則完全沒有條目；而 `.237`/`.249` 的 hostname 都叫 `ailab-2080Tix2`、`.232` 叫 `ailab-5080`。金鑰貼錯帳號是這條線上最花時間的一次卡關。
+2. **.249 是共用機器**，另一位使用者的 SUMO 工作常佔掉 10 核以上。所以 Ingolstadt 系列在 2026-08-22 整批搬到獨占的 `.232`，`.249` 上的工作已停掉、機器歸還。
+3. **兩台機器上都是另外 clone `~/tscRL_transfer` 配獨立容器**，刻意不動 `.249` 原本的 `~/tscRL_study`（那邊有 `run_queue.sh` 的未提交修改）。
+4. **真正影響可比性的是「執行緒設定」，不是機器**。`.232` 與 `.249` 在相同 `OMP_NUM_THREADS=2` / `--thread_num 2` 下，Ingolstadt 1-episode 的 travel time 是**位元級相同**（597.7214）。先前觀察到本機 aw/seed 0 是 258.83、`.249` 是 297.83，差 38.9 秒，比較可能來自中斷續跑打斷 RNG 流或執行緒環境不同。**同一張比較表要用同一組執行緒設定跑完**（`.249` 上曾把 seed 3-4 壓成 `OMP=1`，與 seed 0-2 的 `=2` 不一致，那批已作廢並在 `.232` 重跑）。
 5. **不要編輯執行中的 shell 腳本**：bash 會按位元組偏移重讀，改 `resilient_run.sh` 會弄壞正在跑的長任務。需要改行為時另開檔案（`scripts/resilient_run_world.sh` 就是這樣來的）。
 
 ### 6.5 新增的執行腳本
