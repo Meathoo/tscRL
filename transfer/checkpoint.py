@@ -85,6 +85,7 @@ _MODULES = (
     ('base_actor', 'base_actor'),
     ('base_value', 'base_value'),
     ('topology_encoder', 'topology_encoder'),
+    ('dynamic_encoder', 'dynamic_encoder'),
     ('movement_encoder', 'movement_encoder'),
     ('graph_critic', 'graph_critic'),
     ('cos_state_encoder', 'cos_state_encoder'),

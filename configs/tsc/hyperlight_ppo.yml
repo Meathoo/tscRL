@@ -59,6 +59,18 @@ model:
   transfer_checkpoint: null
   transfer_strict: False
 
+  # --- dynamic (traffic-state) conditioning (dynamic/DYNAMIC.md) -------------
+  # meta gains a term driven by a slow per-intersection EMA of queue,
+  # occupancy, pressure, approach imbalance and queue slope. The encoder's
+  # output layer is zero-initialised, so with dynamic_scale untouched a run
+  # starts numerically identical to the same run without it.
+  # Half-life is in decision steps (action_interval seconds each), so 60 is
+  # ten minutes of simulated time at the default action_interval of 10.
+  dynamic_condition_enabled: False
+  dynamic_ema_halflife: 60
+  dynamic_hidden_dim: 64
+  dynamic_scale: 1.0
+
   # Optional canonical lane-link movement encoder. It is local-only for the
   # decentralized actor; raw observations remain in the PPO rollout buffer.
   movement_encoder_enabled: False

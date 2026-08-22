@@ -15,6 +15,8 @@
 #             from-scratch control.
 #   compress  the two chunked cells of a {flat, chunked} x {structural, learned}
 #             square; stage1's own runs are the two flat cells.
+#   dynamic   structural conditioning with and without the slow traffic-state
+#             term (dynamic/DYNAMIC.md).
 #
 # Usage (inside the container):
 #   scripts/transfer_study.sh list                # print the job list and exit
@@ -23,6 +25,7 @@
 #   scripts/transfer_study.sh zeroshot            # needs stage1 checkpoints
 #   scripts/transfer_study.sh finetune            # needs stage1 checkpoints
 #   scripts/transfer_study.sh compress            # chunked vs flat, same network
+#   scripts/transfer_study.sh dynamic             # traffic-state conditioning
 #
 # Extra seeds for an existing stage are just a SEEDS override, e.g.
 #   WORLD=sumo NETWORK=sumo1x21 SEEDS="3 4" scripts/transfer_study.sh stage1
@@ -89,6 +92,20 @@ case "$STAGE" in
         CONFIGS=(
             "c8struct|--agent_embedding_mode structural --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16"
             "c8learned|--agent_embedding_mode learned --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16"
+        )
+        ;;
+    dynamic)
+        # Isolates one variable: both arms condition on the structural features,
+        # only one of them also gets the slow traffic-state term.  See
+        # dynamic/DYNAMIC.md.  If the `struct` arm already exists on this
+        # machine, resilient_run_world.sh sees its finished checkpoints and
+        # returns immediately, so the control is never re-run needlessly.
+        NETWORK="${NETWORK:-cityflow4x4}"
+        SEEDS="${SEEDS:-0 1 2}"
+        EPISODES="${EPISODES:-250}"
+        CONFIGS=(
+            "struct|--agent_embedding_mode structural"
+            "structdyn|--agent_embedding_mode structural --dynamic_condition_enabled True"
         )
         ;;
     zeroshot|finetune)
@@ -175,7 +192,7 @@ fi
 
 JOBS=()
 case "$STAGE" in
-    stage1|list|smoke|compress)
+    stage1|list|smoke|compress|dynamic)
         # smoke gets its own prefix so a 1-episode validation run can never be
         # mistaken for -- or resumed as -- a real stage1 run.
         name_prefix=''

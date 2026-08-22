@@ -146,6 +146,15 @@ parser.add_argument('--hyper_rf_init', type=str2bool, nargs='?', const=True, def
                     help='override model.hyper_rf_init (fan-in calibrated generator init)')
 parser.add_argument('--save_rate', type=int, default=None,
                     help='override logger.save_rate (checkpoint every N episodes)')
+parser.add_argument('--dynamic_condition_enabled', type=str2bool, nargs='?', const=True, default=None,
+                    help='override model.dynamic_condition_enabled; conditions the '
+                         'hypernetwork on a slow EMA of each intersection traffic state')
+parser.add_argument('--dynamic_ema_halflife', type=float, default=None,
+                    help='override model.dynamic_ema_halflife (in decision steps)')
+parser.add_argument('--dynamic_hidden_dim', type=int, default=None,
+                    help='override model.dynamic_hidden_dim; 0 uses a single Linear')
+parser.add_argument('--dynamic_scale', type=float, default=None,
+                    help='override model.dynamic_scale')
 parser.add_argument('--train_model', type=str2bool, nargs='?', const=True, default=None,
                     help='override model.train_model; False evaluates the agent as constructed '
                          '(with --transfer_checkpoint this is a true zero-shot evaluation)')

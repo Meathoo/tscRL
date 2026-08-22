@@ -29,6 +29,13 @@ from transfer import (
     spec_id as structural_spec_id,
     summarize_raw_features,
 )
+from dynamic import (
+    DynamicFeatureTracker,
+    FEATURE_DIM as DYNAMIC_FEATURE_DIM,
+    RAW_DIM as DYNAMIC_RAW_DIM,
+    spec_id as dynamic_spec_id,
+    summarize as summarize_dynamic_features,
+)
 
 
 @Registry.register_model('hyperlight_spo')
@@ -434,6 +441,43 @@ class HyperLightPPOAgent(RLAgent):
                     self.meta_dim,
                 ).to(self.device)
 
+        # Dynamic (traffic-state) conditioning: meta gains a term that moves
+        # with a slow EMA of what each intersection is currently experiencing.
+        # See dynamic/DYNAMIC.md.  The output layer is zero-initialised, so at
+        # step 0 meta is exactly what it would have been without this, and any
+        # baseline stays reproducible.
+        self.dynamic_enabled = bool(cfg.get('dynamic_condition_enabled', False))
+        self.dynamic_halflife = float(cfg.get('dynamic_ema_halflife', 60.0))
+        self.dynamic_hidden_dim = int(cfg.get('dynamic_hidden_dim', 64))
+        self.dynamic_scale = float(cfg.get('dynamic_scale', 1.0))
+        self.dynamic_tracker = None
+        self.dynamic_encoder = None
+        self.dynamic_spec = None
+        self._dynamic_current = None
+        self._last_dynamic_summary = ''
+        if self.dynamic_enabled:
+            if self.dynamic_halflife <= 0:
+                raise ValueError('dynamic_ema_halflife must be positive')
+            self.dynamic_tracker = DynamicFeatureTracker(
+                self.sub_agents,
+                self.dynamic_halflife,
+            )
+            self.dynamic_spec = dynamic_spec_id(self.dynamic_halflife)
+            layers = []
+            if self.dynamic_hidden_dim > 0:
+                layers += [
+                    nn.Linear(DYNAMIC_FEATURE_DIM, self.dynamic_hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(self.dynamic_hidden_dim, self.meta_dim),
+                ]
+            else:
+                layers += [nn.Linear(DYNAMIC_FEATURE_DIM, self.meta_dim)]
+            self.dynamic_encoder = nn.Sequential(*layers).to(self.device)
+            self._zero_last_linear(self.dynamic_encoder)
+            # lane_count is needed for the occupancy/pressure terms whether or
+            # not the reward mode already asked for it.
+            self.world.subscribe(['lane_count'])
+
         self.cos_enabled = bool(cfg.get('cos_enabled', False))
         self.cos_top_k = min(
             self.sub_agents,
@@ -726,11 +770,22 @@ class HyperLightPPOAgent(RLAgent):
         if self.embedding_mode == 'structural':
             lines.append(f'structural conditioning spec: {self.structural_spec}')
             lines.append(summarize_raw_features(self.structural_raw_features))
+        if self.dynamic_enabled:
+            lines.append(
+                f'dynamic conditioning spec: {self.dynamic_spec} '
+                f'(alpha={self.dynamic_tracker.alpha:.5f}, scale={self.dynamic_scale:g})'
+            )
         if self.transfer_report is not None:
             lines.append(format_transfer_report(self.transfer_report))
             for note in self.transfer_report['skipped_by_design']:
                 lines.append(f'  not transferred: {note}')
         return lines
+
+    def dynamic_episode_summary(self):
+        """Last committed dynamic feature block, for the per-episode log."""
+        if not self.dynamic_enabled or self._dynamic_current is None:
+            return ''
+        return summarize_dynamic_features(self._dynamic_current)
 
     def __repr__(self):
         critic_type = (
@@ -750,6 +805,8 @@ class HyperLightPPOAgent(RLAgent):
             f"/{self.hyper_chunk_embed_dim}/g{self.hyper_chunk_generator_hidden}, "
             f"objective={self.policy_objective}, "
             f"embedding={self.embedding_mode}, topology={self.topology_aware_embedding}, "
+            f"dynamic={self.dynamic_enabled}"
+            f"{'' if not self.dynamic_enabled else f'@hl{self.dynamic_halflife:g}x{self.dynamic_scale:g}'}, "
             f"transfer={'-' if self.transfer_checkpoint is None else os.path.basename(self.transfer_checkpoint)}, "
             f"movement_encoder={self.movement_encoder_enabled}, "
             f"activation={self.activation}, "
@@ -1884,16 +1941,25 @@ class HyperLightPPOAgent(RLAgent):
                 )
             return diagnostics
 
-    def _agent_meta(self, batch_size):
+    def _agent_meta(self, batch_size, dynamic=None):
         if self.agent_embeddings is None:
             # structural mode: no per-index table, the meta vector is a pure
             # function of the intersection's structure (transfer/TRANSFER.md B1)
             meta = self.topology_encoder(self.registered_topology_features)
-            return meta.unsqueeze(0).expand(batch_size, -1, -1)
-        meta = self.agent_embeddings
-        if self.topology_encoder is not None:
-            meta = meta + self.topology_encoder(self.registered_topology_features)
-        return meta.unsqueeze(0).expand(batch_size, -1, -1)
+        else:
+            meta = self.agent_embeddings
+            if self.topology_encoder is not None:
+                meta = meta + self.topology_encoder(self.registered_topology_features)
+        meta = meta.unsqueeze(0).expand(batch_size, -1, -1)
+        if self.dynamic_encoder is not None:
+            if dynamic is None:
+                raise RuntimeError(
+                    'dynamic conditioning is on but no dynamic features were passed; '
+                    'the PPO update has to replay the features recorded during the '
+                    'rollout or the log-probabilities will silently disagree'
+                )
+            meta = meta + self.dynamic_scale * self.dynamic_encoder(dynamic)
+        return meta
 
     def _cos_parameters(self):
         modules = [
@@ -2212,8 +2278,9 @@ class HyperLightPPOAgent(RLAgent):
         deterministic_cos=False,
         return_cos=False,
         return_residual_diagnostics=False,
+        dynamic=None,
     ):
-        base_meta = self._agent_meta(state_tensor.shape[0])
+        base_meta = self._agent_meta(state_tensor.shape[0], dynamic=dynamic)
         meta, selected_cos_ids, cos_log_prob, cos_entropy, cos_probs = self._meta_with_cos(
             state_tensor,
             base_meta,
@@ -2339,6 +2406,7 @@ class HyperLightPPOAgent(RLAgent):
                 deterministic_cos=deterministic_cos,
                 return_cos=True,
                 return_residual_diagnostics=collect_residual,
+                dynamic=self._dynamic_tensor(self._dynamic_current),
             )
             if collect_residual:
                 (
@@ -2367,6 +2435,11 @@ class HyperLightPPOAgent(RLAgent):
 
     def reset(self):
         self._build_generators()
+        if self.dynamic_tracker is not None:
+            # Each episode starts from a cold road network, so carrying the
+            # previous episode's EMA in would describe traffic that is gone.
+            self.dynamic_tracker.reset()
+            self._dynamic_current = None
         self._cached_action_prob = None
         self._cached_value = None
         self._cached_cos_ids = None
@@ -2429,6 +2502,55 @@ class HyperLightPPOAgent(RLAgent):
             current_abs_pressure.append(abs(pressure))
         return np.asarray(current_abs_pressure, dtype=np.float32)
 
+    def _dynamic_raw(self):
+        """Instantaneous per-intersection traffic quantities for the EMA.
+
+        Read straight from the world rather than parsed back out of the padded
+        observation vector, so the definition does not depend on how many lanes
+        an intersection happens to have or on the feature layout.
+        Order must match ``dynamic.RAW_NAMES``.
+        """
+        lane_count = self.world.get_info('lane_count')
+        rows = []
+        for idx, (in_lanes, out_lanes) in enumerate(self.pressure_lanes):
+            waiting = np.asarray(self.queue_generator[idx].generate(), dtype=np.float32)
+            n_in = max(1, len(in_lanes))
+
+            queue = float(waiting.mean()) if waiting.size else 0.0
+            in_count = sum(self._lane_count_value(lane_count, lane) for lane in in_lanes)
+            out_count = sum(self._lane_count_value(lane_count, lane) for lane in out_lanes)
+            occupancy = in_count / n_in
+            pressure = (in_count - out_count) / n_in
+            # 1.0 when every approach is equally loaded, larger when one
+            # approach carries the queue on its own.
+            imbalance = float(waiting.max()) / (queue + 1.0) if waiting.size else 0.0
+
+            rows.append([queue, occupancy, pressure, imbalance])
+        raw = np.asarray(rows, dtype=np.float32).reshape(self.sub_agents, DYNAMIC_RAW_DIM)
+        return raw
+
+    def _dynamic_advance(self, commit=True):
+        """Move the tracker one decision step and return the scaled features."""
+        if self.dynamic_tracker is None:
+            return None
+        return self.dynamic_tracker.step(self._dynamic_raw(), commit=commit)
+
+    def _dynamic_tensor(self, features):
+        """``[n_agents, D]`` numpy (or ``[B, n_agents, D]``) -> batched tensor."""
+        if self.dynamic_encoder is None:
+            return None
+        if features is None:
+            # Only reachable before the first decision of an episode.
+            features = self.dynamic_tracker.zeros()
+        tensor = torch.as_tensor(
+            np.asarray(features, dtype=np.float32),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        if tensor.dim() == 2:
+            tensor = tensor.unsqueeze(0)
+        return tensor
+
     def get_phase(self):
         phase = []
         for phase_gen in self.phase_generator:
@@ -2456,6 +2578,10 @@ class HyperLightPPOAgent(RLAgent):
         )
 
     def get_action(self, ob, phase, test=False):
+        if self.dynamic_tracker is not None:
+            # Exactly one commit per decision, on both the train and the test
+            # path, so the EMA a stored transition refers to is unambiguous.
+            self._dynamic_current = self._dynamic_advance(commit=True)
         deterministic_cos = bool(test and self.cos_deterministic_eval)
         probs, values, cos_ids, cos_log_prob = self._policy_prob_from_np(
             ob,
@@ -2553,6 +2679,19 @@ class HyperLightPPOAgent(RLAgent):
             if done_arr.shape[0] != self.sub_agents:
                 done_arr = np.full((self.sub_agents,), float(done_arr[0]), dtype=np.float32)
 
+        if self.dynamic_tracker is not None:
+            dynamic = (
+                self.dynamic_tracker.zeros()
+                if self._dynamic_current is None
+                else self._dynamic_current
+            )
+            # Peek, do not commit: the world has already advanced, and the next
+            # get_action() commits this very same step, so the two agree exactly.
+            next_dynamic = self._dynamic_advance(commit=False)
+        else:
+            dynamic = np.zeros((self.sub_agents, 0), dtype=np.float32)
+            next_dynamic = dynamic
+
         self.rollout_buffer.append(
             (
                 state,
@@ -2564,6 +2703,8 @@ class HyperLightPPOAgent(RLAgent):
                 old_value,
                 old_cos_ids,
                 old_cos_log_prob,
+                dynamic,
+                next_dynamic,
             )
         )
         self._transitions_since_update += 1
@@ -2579,6 +2720,8 @@ class HyperLightPPOAgent(RLAgent):
             old_values,
             old_cos_ids,
             old_cos_log_probs,
+            dynamics,
+            next_dynamics,
         ) = zip(*rollout)
         return (
             torch.tensor(np.asarray(states), dtype=torch.float32, device=self.device),
@@ -2590,11 +2733,17 @@ class HyperLightPPOAgent(RLAgent):
             torch.tensor(np.asarray(old_values), dtype=torch.float32, device=self.device),
             torch.tensor(np.asarray(old_cos_ids), dtype=torch.long, device=self.device),
             torch.tensor(np.asarray(old_cos_log_probs), dtype=torch.float32, device=self.device),
+            torch.tensor(np.asarray(dynamics), dtype=torch.float32, device=self.device),
+            torch.tensor(np.asarray(next_dynamics), dtype=torch.float32, device=self.device),
         )
 
-    def _compute_gae(self, rewards, dones, old_values, next_states):
+    def _compute_gae(self, rewards, dones, old_values, next_states, next_dynamics=None):
         with torch.no_grad():
-            _, last_value = self._policy_value(next_states[-1:].detach(), deterministic_cos=True)
+            _, last_value = self._policy_value(
+                next_states[-1:].detach(),
+                deterministic_cos=True,
+                dynamic=None if next_dynamics is None else next_dynamics[-1:].detach(),
+            )
             last_value = last_value.squeeze(0)
 
         advantages = torch.zeros_like(rewards)
@@ -2736,8 +2885,16 @@ class HyperLightPPOAgent(RLAgent):
             old_value_t,
             old_cos_ids_t,
             old_cos_log_prob_t,
+            dynamic_t,
+            next_dynamic_t,
         ) = self._rollout_tensors(rollout)
-        advantages_t, returns_t = self._compute_gae(reward_t, done_t, old_value_t, next_state_t)
+        advantages_t, returns_t = self._compute_gae(
+            reward_t,
+            done_t,
+            old_value_t,
+            next_state_t,
+            next_dynamics=next_dynamic_t if self.dynamic_encoder is not None else None,
+        )
 
         num_steps = state_t.shape[0]
         step_batch_size = max(1, min(num_steps, self.ppo_minibatch_size // max(1, self.sub_agents)))
@@ -2765,6 +2922,13 @@ class HyperLightPPOAgent(RLAgent):
                 b_return = returns_t.index_select(0, batch_idx)
                 b_old_cos_ids = old_cos_ids_t.index_select(0, batch_idx)
                 b_old_cos_log_prob = old_cos_log_prob_t.index_select(0, batch_idx)
+                # Replaying the recorded features is what keeps the update's
+                # log-probabilities consistent with the rollout's.
+                b_dynamic = (
+                    dynamic_t.index_select(0, batch_idx)
+                    if self.dynamic_encoder is not None
+                    else None
+                )
 
                 if self.cos_enabled:
                     policy_output = self._policy_value(
@@ -2772,6 +2936,7 @@ class HyperLightPPOAgent(RLAgent):
                         cos_ids=b_old_cos_ids,
                         return_cos=True,
                         return_residual_diagnostics=collect_residual,
+                        dynamic=b_dynamic,
                     )
                     if collect_residual:
                         (
@@ -2791,9 +2956,10 @@ class HyperLightPPOAgent(RLAgent):
                         logits, values, batch_residual_diagnostics = self._policy_value(
                             b_state,
                             return_residual_diagnostics=True,
+                            dynamic=b_dynamic,
                         )
                     else:
-                        logits, values = self._policy_value(b_state)
+                        logits, values = self._policy_value(b_state, dynamic=b_dynamic)
                         batch_residual_diagnostics = {}
                     new_cos_log_prob = None
                     cos_entropy = None
@@ -2867,6 +3033,8 @@ class HyperLightPPOAgent(RLAgent):
             params.append(self.agent_embeddings)
         if self.topology_encoder is not None:
             params.extend(self.topology_encoder.parameters())
+        if self.dynamic_encoder is not None:
+            params.extend(self.dynamic_encoder.parameters())
         if self.cos_enabled:
             params.extend(self._cos_parameters())
         unique_params = []
@@ -2915,6 +3083,11 @@ class HyperLightPPOAgent(RLAgent):
                 )
             ),
             'structural_spec': self.structural_spec,
+            'dynamic_spec': self.dynamic_spec,
+            'dynamic_hidden_dim': (
+                int(self.dynamic_hidden_dim) if self.dynamic_enabled else None
+            ),
+            'dynamic_scale': float(self.dynamic_scale) if self.dynamic_enabled else None,
             'actor_hypernet_type': str(self.hypernet_type),
             'hyper_actor_arch': self.actor_arch,
             'iru_actor_hidden_dim': (
@@ -3081,6 +3254,8 @@ class HyperLightPPOAgent(RLAgent):
         if self.topology_encoder is not None:
             payload['topology_encoder'] = self.topology_encoder.state_dict()
             payload['topology_feature_names'] = self.topology_feature_names
+        if self.dynamic_encoder is not None:
+            payload['dynamic_encoder'] = self.dynamic_encoder.state_dict()
         if self.cos_enabled:
             payload['cos_state_encoder'] = (
                 None if self.cos_state_encoder is None else self.cos_state_encoder.state_dict()
@@ -3128,6 +3303,11 @@ class HyperLightPPOAgent(RLAgent):
             self.agent_embeddings.data.copy_(checkpoint['agent_embeddings'].to(self.device))
         if self.topology_encoder is not None and 'topology_encoder' in checkpoint:
             self.topology_encoder.load_state_dict(checkpoint['topology_encoder'])
+        if self.dynamic_encoder is not None:
+            dynamic_state = checkpoint.get('dynamic_encoder')
+            if dynamic_state is None:
+                raise RuntimeError('checkpoint does not contain the configured dynamic encoder')
+            self.dynamic_encoder.load_state_dict(dynamic_state)
         if self.cos_enabled:
             if self.cos_state_encoder is not None and checkpoint.get('cos_state_encoder') is not None:
                 self.cos_state_encoder.load_state_dict(checkpoint['cos_state_encoder'])
