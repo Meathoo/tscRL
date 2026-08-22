@@ -211,7 +211,10 @@ best TEST（訓練中最佳）
 
 ### 6.3 執行中 / 待辦
 
-- **2026-08-23 起全部批次跑完，三台閒置。** 已完成 (a)–(g) 七組實驗。
+- **執行中（2026-08-22 起）**：動態車流 condition 的 `struct` vs `structdyn` 對照，三台各一個路網——
+  `.232` 跑最慢的 7x28（6 job，約 38h）、`.237` 跑 Ingolstadt21（6 job，約 7.5h）、本機跑 4x4（6 job，約 8h）。
+  設計、特徵表與 PPO 一致性的處理方式在 **`dynamic/DYNAMIC.md`**。16x3 尚未排。
+- (a)–(g) 七組實驗已完成，數字在 §6.2。
 - **待辦**：動態車流 condition（arrival rate / queue slope 的慢速 EMA，對應 BRSC v2 的 Dynamic Traffic-Role FiLM）；B4（movement encoder + 排列不變 phase head）；從 BRSC-MAPPO 移植 boundary randomization 與 scale-consistency loss；本機 `scripts/q_4x4.txt` / `q_16x3.txt` 的 chunked study 空格。
 - 動態 condition 的實作注意事項：condition 一變成 state-dependent，就必須把特徵存進 rollout buffer 並穿過 `remember` / `_rollout_tensors` / `_policy_value`，否則 PPO 的 log-prob 對不上——**不會報錯，只會靜靜地算錯 ratio**。
 - 為什麼值得做動態 condition：(a) 顯示在同質路網上，表達力最強的 `learned` 打不贏幾乎是常數的 `structural`，(e) 顯示 `structural` 的優勢只在異質路網出現。也就是說**「跟著身分走」的條件化在同質網上沒有價值**，動態（跟著狀態走）是那裡唯一還沒試過的槓桿。
