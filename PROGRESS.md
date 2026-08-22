@@ -161,11 +161,60 @@ CityFlow 的三個路網（4x4 / 16x3 / 7x28）受控路口**結構完全同質*
 
 **結論**：靜態結構 condition 不是沒用，是**只在異質路網上有用**；在同質路網上它的價值是「可遷移」而非「更好」。
 
+**(e) Ingolstadt21 完整 2×2 × 5 seed（.232，2026-08-22）**
+
+上面 (d) 那批是在 `.249` 上跑的 3 seed，後來發現該機器被他人工作擠占、可能觸發過中斷續跑（見 §6.4 第 4 點），所以整個矩陣在獨占的 `.232` 上用單一設定重跑，並補到 5 seed、補上 chunked 兩格：
+
+last TEST（收尾值）
+
+| | flat | chunked(c8) |
+|---|---:|---:|
+| **structural** | **220.55 ± 6.26** | 245.47 ± 48.15 |
+| learned | 263.88 ± 7.01 | 255.60 ± 33.19 |
+
+best TEST（訓練中最佳）
+
+| | flat | chunked(c8) |
+|---|---:|---:|
+| **structural** | **203.75 ± 6.89** | 204.19 ± 5.12 |
+| learned | 227.26 ± 19.44 | 210.44 ± 17.00 |
+
+- structural × flat 仍是最好的格子，領先 learned × flat **43.3 秒**，5 個 seed 完全不重疊（struct 最差 230.63 < learned 最好 258.48）。3-seed 版的平均幾乎沒動（218.67 → 220.55），標準差從 19.67 縮到 6.26。
+- **chunked 壓縮沒有吃掉 structural 的優勢**：`best` 上 203.75 vs 204.19 幾乎相同。chunked 對 `learned` 反而幫助明顯（227.26 → 210.44）。「conditioning 選什麼」與「用哪種壓縮頭」是兩件獨立的事。
+- **chunked 的收尾很不穩**：`last` 標準差 48.15 / 33.19，對比 flat 的 6.26 / 7.01。`c8struct` seed 0 收在 325.12 但 best 是 203.21——找得到好策略、守不住。與 CityFlow 上觀察到的 chunked 崩潰同一個病。
+
+**(f) 7x28 fine-tune（50 ep × 3 seed）——負面結果**
+
+| | ep0 | ep10 | ep25 | ep45 | best |
+|---|---:|---:|---:|---:|---:|
+| structural 轉移 | 1367.5 | 1414.3 | 1401.4 | **1373.9** | 1347.7 |
+| learned 轉移 | 1413.4 | 1417.8 | 1403.5 | **1399.8** | 1373.4 |
+| 從零開始 | 1762.0 | 1678.2 | 1469.2 | **1391.5** | 1374.0 |
+
+**50 個 episode 之內，從零開始就追平了兩種 transfer。** 對照 16x3 的同一張表（ep45：181.4 / 182.0 / 1354.5），差別是天與地。structural 的 ep0（1367.5）雖優於 learned（1413.4），但一開始 fine-tune 反而先變差（ep10 升到 1414.3）。
+
+說得通的解釋：**每個 episode 的樣本數正比於路口數**。7x28 有 196 個路口，一個 episode 收 70,560 筆轉移，是 16x3（17,280 筆）的 4 倍；目標路網越大、自己的資料越充足，transfer 的邊際價值越低。
+
+**這是這條線的邊界，寫論文時不能只報 16x3**：「小網訓練、大網部署」在 48 路口成立（5 倍樣本效率），到 196 路口就不成立。
+
+**(g) 7x28 `awrf`（本機，補齊 rf 的 2×2）**
+
+| 設定 | last (mean ± std) |
+|---|---:|
+| aw | **1231.20 ± 4.42** |
+| awrf | 1247.01 ± 11.44 |
+| c8rf | 1246.23 ± 31.49 |
+| c8g64rf | 1260.73 ± 21.62 |
+| c8 | 1280.17 ± 75.24 |
+
+`rf_init` 對 flat 頭沒幫助（1231 → 1247，略差），但對 chunked 頭有效——尤其是把標準差砍半（75.24 → 31.49）。跟 (e) 的「chunked 收尾不穩」對得起來：**`rf_init` 治的是穩定性，不是平均值**。
+
 ### 6.3 執行中 / 待辦
 
-- **執行中**：7x28 fine-tune（.237）、Ingolstadt 5-seed 擴充 + `{flat, chunked} × {structural, learned}` 2×2（.249）、`awrf_7x28` 收尾（本機）。
-- **待辦**：動態車流 condition（arrival rate / turn ratio / queue slope 的慢速 EMA，BRSC v2 的 Dynamic Traffic-Role FiLM）；B4（movement encoder + 排列不變 phase head）；從 BRSC-MAPPO 移植 boundary randomization 與 scale-consistency loss。
+- **2026-08-23 起全部批次跑完，三台閒置。** 已完成 (a)–(g) 七組實驗。
+- **待辦**：動態車流 condition（arrival rate / queue slope 的慢速 EMA，對應 BRSC v2 的 Dynamic Traffic-Role FiLM）；B4（movement encoder + 排列不變 phase head）；從 BRSC-MAPPO 移植 boundary randomization 與 scale-consistency loss；本機 `scripts/q_4x4.txt` / `q_16x3.txt` 的 chunked study 空格。
 - 動態 condition 的實作注意事項：condition 一變成 state-dependent，就必須把特徵存進 rollout buffer 並穿過 `remember` / `_rollout_tensors` / `_policy_value`，否則 PPO 的 log-prob 對不上——**不會報錯，只會靜靜地算錯 ratio**。
+- 為什麼值得做動態 condition：(a) 顯示在同質路網上，表達力最強的 `learned` 打不贏幾乎是常數的 `structural`，(e) 顯示 `structural` 的優勢只在異質路網出現。也就是說**「跟著身分走」的條件化在同質網上沒有價值**，動態（跟著狀態走）是那裡唯一還沒試過的槓桿。
 
 ### 6.4 機器分配（三台）
 
@@ -181,7 +230,9 @@ CityFlow 的三個路網（4x4 / 16x3 / 7x28）受控路口**結構完全同質*
 1. **ssh 一定要寫明帳號**。`~/.ssh/config` 把 `.237` 對應到 `ailab`，`.232` 則完全沒有條目；而 `.237`/`.249` 的 hostname 都叫 `ailab-2080Tix2`、`.232` 叫 `ailab-5080`。金鑰貼錯帳號是這條線上最花時間的一次卡關。
 2. **.249 是共用機器**，另一位使用者的 SUMO 工作常佔掉 10 核以上。所以 Ingolstadt 系列在 2026-08-22 整批搬到獨占的 `.232`，`.249` 上的工作已停掉、機器歸還。
 3. **兩台機器上都是另外 clone `~/tscRL_transfer` 配獨立容器**，刻意不動 `.249` 原本的 `~/tscRL_study`（那邊有 `run_queue.sh` 的未提交修改）。
-4. **真正影響可比性的是「執行緒設定」，不是機器**。`.232` 與 `.249` 在相同 `OMP_NUM_THREADS=2` / `--thread_num 2` 下，Ingolstadt 1-episode 的 travel time 是**位元級相同**（597.7214）。先前觀察到本機 aw/seed 0 是 258.83、`.249` 是 297.83，差 38.9 秒，比較可能來自中斷續跑打斷 RNG 流或執行緒環境不同。**同一張比較表要用同一組執行緒設定跑完**（`.249` 上曾把 seed 3-4 壓成 `OMP=1`，與 seed 0-2 的 `=2` 不一致，那批已作廢並在 `.232` 重跑）。
+4. **同一張比較表要在同一台「沒有被搶占」的機器上跑完**。不同機器本身是可以重現的：Ingolstadt `aw`/seed 0 在本機與 `.232` 上是**位元級相同**（last 258.83、best 211.11）。異常的是 `.249`——同一設定同一 seed 收在 297.83，struct seed 0-2 也跟 `.232` 對不起來。最可能的原因是該機器被他人的 11 個 SUMO 行程擠占，觸發了 `resilient_run` 的中斷續跑，而**續跑會打斷 RNG 流，等於換了一次 seed**。
+   （注意：曾經只憑「1 個 episode 的 smoke 完全相同」就推論兩台可比，那個推論是錯的——1 個 episode 相同不代表 250 個 episode 相同。）
+   執行緒設定同樣要固定：`.249` 上曾把 seed 3-4 壓成 `OMP=1`、seed 0-2 是 `=2`，那批已作廢並在 `.232` 用單一設定重跑。
 5. **不要編輯執行中的 shell 腳本**：bash 會按位元組偏移重讀，改 `resilient_run.sh` 會弄壞正在跑的長任務。需要改行為時另開檔案（`scripts/resilient_run_world.sh` 就是這樣來的）。
 
 ### 6.5 新增的執行腳本
