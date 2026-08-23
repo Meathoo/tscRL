@@ -1,0 +1,11 @@
+transfer from best_0.pt (16 -> 48 intersections) | actor_hypernet=4/4 | value_hypernet=4/4 | differs=node_count,phase_lengths
+  not transferred: agent_embeddings (per-intersection index table has no meaning in a different network)
+  not transferred: optimizer (Adam moments belong to the source task)
+step:3600/3600, q_loss:0.00034421072291198793, rewards:-17.98055648803711, queue:4.444270610809326, delay:0.08964571356773376, throughput:2648
+episode:0/1, real avg travel time:514.3360481586402
+Test step:0/1, travel time :357.45396600566573, rewards:-8.988056182861328, queue:2.1701388359069824, delay:0.07221750169992447, throughput:2764
+New best TEST travel time 357.4540 at episode 0, saved as best checkpoint
+Hyperparameters saved to: data/output_data/tsc/cityflow_hyperlight_mappo/cityflow16x3/zs_learned_4x4to16x3_seed0/hyperparameters.json
+Loaded best checkpoint for final evaluation
+Final Travel Time is 357.4540, mean rewards: -8.9881, queue: 2.1701, delay: 0.0722, throughput: 2764
+Total time taken: 128.67250227928162

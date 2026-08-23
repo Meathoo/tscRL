@@ -1,0 +1,13 @@
+structural conditioning spec: structural_v1:in_lane_count,out_lane_count,in_degree,out_degree,node_degree,neighbor_count,phase_count,startlane_count,lanes_per_in_road,lanes_per_out_road,out_in_lane_ratio,controlled_neighbor_ratio
+structural features (min/mean/max): in_lane_count[12/12.00/12] out_lane_count[12/12.00/12] in_degree[4/4.00/4] out_degree[4/4.00/4] node_degree[8/8.00/8] neighbor_count[2/3.21/4] phase_count[8/8.00/8] startlane_count[12/12.00/12] lanes_per_in_road[3/3.00/3] lanes_per_out_road[3/3.00/3] out_in_lane_ratio[1/1.00/1] controlled_neighbor_ratio[0.5/0.80/1]
+transfer from best_0.pt (16 -> 48 intersections) | actor_hypernet=4/4 | topology_encoder=4/4 | value_hypernet=4/4 | differs=node_count,phase_lengths
+  not transferred: agent_embeddings (per-intersection index table has no meaning in a different network)
+  not transferred: optimizer (Adam moments belong to the source task)
+step:3600/3600, q_loss:4.147284615347967e-05, rewards:-2.936319351196289, queue:0.6420717835426331, delay:0.04617733135819435, throughput:2806
+episode:0/1, real avg travel time:228.28859773371104
+Test step:0/1, travel time :218.15757790368272, rewards:-2.4814116954803467, queue:0.5294560194015503, delay:0.04230436682701111, throughput:2810
+New best TEST travel time 218.1576 at episode 0, saved as best checkpoint
+Hyperparameters saved to: data/output_data/tsc/cityflow_hyperlight_mappo/cityflow16x3/zs_struct_4x4to16x3_seed1/hyperparameters.json
+Loaded best checkpoint for final evaluation
+Final Travel Time is 218.1576, mean rewards: -2.4814, queue: 0.5295, delay: 0.0423, throughput: 2810
+Total time taken: 124.84791040420532

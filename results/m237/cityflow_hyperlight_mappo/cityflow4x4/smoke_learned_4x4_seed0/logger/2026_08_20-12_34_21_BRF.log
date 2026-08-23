@@ -1,0 +1,8 @@
+step:3600/3600, q_loss:0.0029487526527157536, rewards:-22.58687400817871, queue:16.860416412353516, delay:0.12684620916843414, throughput:2477
+episode:0/1, real avg travel time:699.7582970164265
+Test step:0/1, travel time :1165.7294669795508, rewards:-66.03555297851562, queue:49.64323043823242, delay:0.28254106640815735, throughput:2202
+New best TEST travel time 1165.7295 at episode 0, saved as best checkpoint
+Hyperparameters saved to: data/output_data/tsc/cityflow_hyperlight_mappo/cityflow4x4/smoke_learned_4x4_seed0/hyperparameters.json
+Loaded best checkpoint for final evaluation
+Final Travel Time is 1165.7295, mean rewards: -66.0356, queue: 49.6432, delay: 0.2825, throughput: 2202
+Total time taken: 49.75667357444763

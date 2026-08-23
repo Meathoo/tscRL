@@ -1,0 +1,7 @@
+Resumed training from episode 25; continuing through episode 249
+step:3600/3600, q_loss:0.00021122738152719387, rewards:-46.75814437866211, queue:11.681018829345703, delay:0.12169313430786133, throughput:1898
+episode:25/250, real avg travel time:961.5874645892351
+Test step:25/250, travel time :1213.8746458923513, rewards:-62.93122863769531, queue:15.74670124053955, delay:0.15387383103370667, throughput:1748
+New best TEST travel time 1213.8746 at episode 25, saved as best checkpoint
+step:3600/3600, q_loss:0.0002060194048501643, rewards:-45.56821823120117, queue:11.37679386138916, delay:0.11862856894731522, throughput:1925
+episode:26/250, real avg travel time:949.8541076487252

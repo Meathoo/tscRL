@@ -87,13 +87,16 @@ def main():
     parser.add_argument('--statistic', default='last', choices=['last', 'tail5', 'best'])
     parser.add_argument('--tail', type=int, default=5, help='TEST points averaged by tail5')
     parser.add_argument('--root', default='data/output_data/tsc')
+    parser.add_argument('--world', default='cityflow', choices=['cityflow', 'sumo'],
+                        help='run.py writes into <world>_<agent>/<network>, so the '
+                             'Ingolstadt runs live under sumo_hyperlight_mappo')
     parser.add_argument('--min-episodes', type=int, default=249,
                         help='seeds below this episode count are reported as in-progress '
                              'and excluded from the mean, so a half-trained run cannot '
                              'quietly drag a config average around')
     args = parser.parse_args()
 
-    root = Path(args.root) / f'cityflow_{args.agent}' / args.network
+    root = Path(args.root) / f'{args.world}_{args.agent}' / args.network
     per_tag = defaultdict(list)
     for tag, seed, path in run_dirs(root):
         summary = summarize_seed(path, args.statistic, args.tail)

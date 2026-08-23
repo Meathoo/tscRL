@@ -1,0 +1,8 @@
+step:3600/3600, q_loss:0.0002857841214992934, rewards:-12.096393585205078, queue:3.6498677730560303, delay:0.21909458935260773, throughput:3886
+episode:0/1, real avg travel time:295.6464230571282
+Test step:0/1, travel time :505.94009489916965, rewards:-33.035675048828125, queue:10.023412704467773, delay:0.3665093779563904, throughput:1686
+New best TEST travel time 505.9401 at episode 0, saved as best checkpoint
+Hyperparameters saved to: data/output_data/tsc/sumo_hyperlight_mappo/sumo1x21/smoke_aw/hyperparameters.json
+Loaded best checkpoint for final evaluation
+Final Travel Time is 505.9401, mean rewards: -33.0357, queue: 10.0234, delay: 0.3665, throughput: 1686
+Total time taken: 325.0931432247162

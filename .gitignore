@@ -36,3 +36,10 @@ docs/tmp.log
 
 # Windows 下載檔案留下的 NTFS 元資料，完全沒用
 *:Zone.Identifier*:Zone.Identifier
+
+# Consolidated run logs from the lab boxes. Regenerate with
+# scripts/collect_results.sh; the tables in docs/RESULTS_CONDITIONING.md are
+# built from them. Tracked because they are small text and are the evidence
+# behind those tables, unlike data/output_data (52G of checkpoints/replays).
+!results/
+!results/**

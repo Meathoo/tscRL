@@ -1,0 +1,5 @@
+transfer from best_0.pt (16 -> 196 intersections) | actor_hypernet=4/4 | value_hypernet=4/4 | differs=node_count,phase_lengths
+  not transferred: agent_embeddings (per-intersection index table has no meaning in a different network)
+  not transferred: optimizer (Adam moments belong to the source task)
+Final Travel Time is 1399.5747, mean rewards: -307.9135, queue: 18.8634, delay: 0.1035, throughput: 9237
+Total time taken: 157.74478125572205
