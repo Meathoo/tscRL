@@ -123,6 +123,19 @@ case "$STAGE" in
             "structcap|--agent_embedding_mode structural --obs_norm_mode capacity"
         )
         ;;
+    baseline)
+        # One non-HyperLight method per invocation, driven by AGENT. Output
+        # already lands under <world>_<agent>/, so the tag can be the agent name
+        # without any risk of collision:
+        #   AGENT=dqn WORLD=sumo NETWORK=sumo1x21 scripts/transfer_study.sh baseline
+        # mplight and frap are NOT runnable on sumo1x21: they look the network up
+        # in a hand-written per-network block (phase_pairs / valid_acts /
+        # lane_order) that exists for the grids, cologne1 and cologne3 only.
+        NETWORK="${NETWORK:-cityflow4x4}"
+        SEEDS="${SEEDS:-0 1 2}"
+        EPISODES="${EPISODES:-250}"
+        CONFIGS=("${AGENT}|")
+        ;;
     zeroshot|finetune)
         NETWORK="${NETWORK:-cityflow4x4}"   # the SOURCE network of the checkpoints
         SEEDS="${SEEDS:-0 1 2}"
@@ -207,7 +220,7 @@ fi
 
 JOBS=()
 case "$STAGE" in
-    stage1|list|smoke|compress|dynamic|obsnorm)
+    stage1|list|smoke|compress|dynamic|obsnorm|baseline)
         # smoke gets its own prefix so a 1-episode validation run can never be
         # mistaken for -- or resumed as -- a real stage1 run.
         name_prefix=''
