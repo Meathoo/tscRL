@@ -22,6 +22,12 @@ from .rl_agent import RLAgent
 from . import utils
 from common.registry import Registry
 from generator import IntersectionPhaseGenerator, LaneVehicleGenerator
+from transfer.observation import (
+    DEFAULT_CLIP as OBS_CAPACITY_CLIP,
+    DEFAULT_HEADWAY_M as OBS_HEADWAY_M,
+    build_divisors as build_observation_divisors,
+    summarize as summarize_capacity,
+)
 from transfer import (
     build_structural_features,
     format_report as format_transfer_report,
@@ -74,6 +80,14 @@ class HyperLightPPOAgent(RLAgent):
             self.vehicle_max = 1.0
         state_features = cfg.get('state_features', ['lane_count', 'lane_waiting_count'])
         self.state_features = state_features if isinstance(state_features, list) else [state_features]
+        # fixed: every count divided by vehicle_max (the original behaviour)
+        # capacity: divided by each lane's own storage capacity
+        self.obs_norm_mode = str(cfg.get('obs_norm_mode', 'fixed')).lower()
+        if self.obs_norm_mode not in ('fixed', 'capacity'):
+            raise ValueError(f'Unknown obs_norm_mode: {self.obs_norm_mode}')
+        self.obs_capacity_headway = float(cfg.get('obs_capacity_headway', OBS_HEADWAY_M))
+        self.obs_capacity_clip = float(cfg.get('obs_capacity_clip', OBS_CAPACITY_CLIP))
+        self._obs_capacity_note = ''
 
         self.gamma = float(cfg.get('gamma', 0.99))
         self.gae_lambda = float(cfg.get('gae_lambda', 0.95))
@@ -770,6 +784,12 @@ class HyperLightPPOAgent(RLAgent):
         if self.embedding_mode == 'structural':
             lines.append(f'structural conditioning spec: {self.structural_spec}')
             lines.append(summarize_raw_features(self.structural_raw_features))
+        if self._obs_capacity_note:
+            lines.append(
+                f'observation normalisation: capacity '
+                f'(headway={self.obs_capacity_headway:g}m, clip={self.obs_capacity_clip:g}); '
+                + self._obs_capacity_note
+            )
         if self.dynamic_enabled:
             lines.append(
                 f'dynamic conditioning spec: {self.dynamic_spec} '
@@ -891,6 +911,36 @@ class HyperLightPPOAgent(RLAgent):
             )
         self.ob_length = int(max_ob_length)
         self.pressure_norms = np.asarray(pressure_norms, dtype=np.float32)
+
+        # Capacity normalisation: divide each lane's counts by what that lane
+        # can physically hold instead of by one global constant, so the same
+        # reading means the same thing on a 100 m and a 600 m approach.
+        # See transfer/observation.py.
+        self.obs_divisors = None
+        if self.obs_norm_mode == 'capacity':
+            divisors = []
+            resolved_total = 0
+            missing_total = 0
+            for ob_gen in self.ob_generator:
+                lane_ids = [lane for road_lanes in ob_gen.lanes for lane in road_lanes]
+                node_divisors, resolved, missing = build_observation_divisors(
+                    self.world,
+                    lane_ids,
+                    self.ob_length,
+                    len(self.state_features),
+                    headway=self.obs_capacity_headway,
+                    fallback=self.vehicle_max,
+                )
+                divisors.append(node_divisors)
+                resolved_total += resolved
+                missing_total += missing
+            self.obs_divisors = np.stack(divisors).astype(np.float32)
+            self._obs_capacity_note = summarize_capacity(divisors)
+            if missing_total:
+                self._obs_capacity_note += (
+                    f' [{missing_total}/{resolved_total + missing_total} lanes had no '
+                    f'resolvable length; those fall back to vehicle_max={self.vehicle_max:g}]'
+                )
 
     def _lanes_for_road(self, inter, road):
         if hasattr(inter, 'road_lane_mapping') and road in inter.road_lane_mapping:
@@ -2452,12 +2502,23 @@ class HyperLightPPOAgent(RLAgent):
 
     def get_ob(self):
         obs = []
-        for ob_gen in self.ob_generator:
-            feature = np.asarray(ob_gen.generate(), dtype=np.float32) / self.vehicle_max
+        for idx, ob_gen in enumerate(self.ob_generator):
+            feature = np.asarray(ob_gen.generate(), dtype=np.float32)
             if feature.shape[-1] < self.ob_length:
                 feature = np.pad(feature, (0, self.ob_length - feature.shape[-1]))
             elif feature.shape[-1] > self.ob_length:
                 feature = feature[: self.ob_length]
+            if self.obs_divisors is None:
+                feature = feature / self.vehicle_max
+            else:
+                # Divide by each lane's own capacity, then clip: a lane packed
+                # tighter than the nominal headway would otherwise send an
+                # unbounded value into the policy.
+                feature = np.clip(
+                    feature / self.obs_divisors[idx],
+                    0.0,
+                    self.obs_capacity_clip,
+                )
             obs.append(feature)
         return np.asarray(obs, dtype=np.float32)
 
@@ -3083,6 +3144,19 @@ class HyperLightPPOAgent(RLAgent):
                 )
             ),
             'structural_spec': self.structural_spec,
+            # None rather than 'fixed' on the default path, so checkpoints that
+            # predate this key still validate. A capacity run records the mode
+            # and its constants, which correctly refuses a fixed checkpoint:
+            # the two feed numerically different observations to the policy.
+            'obs_norm_mode': (
+                None if self.obs_norm_mode == 'fixed' else self.obs_norm_mode
+            ),
+            'obs_capacity_headway': (
+                None if self.obs_norm_mode == 'fixed' else float(self.obs_capacity_headway)
+            ),
+            'obs_capacity_clip': (
+                None if self.obs_norm_mode == 'fixed' else float(self.obs_capacity_clip)
+            ),
             'dynamic_spec': self.dynamic_spec,
             'dynamic_hidden_dim': (
                 int(self.dynamic_hidden_dim) if self.dynamic_enabled else None

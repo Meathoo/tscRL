@@ -13,6 +13,14 @@ model:
   one_hot: True
   state_features: ["lane_count", "lane_waiting_count"]
   vehicle_max: 50
+  # fixed:    every per-lane count / vehicle_max (original behaviour)
+  # capacity: each count / that lane's own storage (length / headway), clipped.
+  # The networks differ a lot in road length -- 4x4 is 600-800m, 16x3 is
+  # 100-350m, 7x28 is 300m -- so under `fixed` the same reading means very
+  # different things across (and within) networks. See transfer/observation.py.
+  obs_norm_mode: fixed          # fixed | capacity
+  obs_capacity_headway: 7.5     # metres of lane per stopped vehicle
+  obs_capacity_clip: 1.5
 
   learning_rate: 0.0003
   adam_eps: 0.00001

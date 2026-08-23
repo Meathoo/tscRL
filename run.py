@@ -146,6 +146,12 @@ parser.add_argument('--hyper_rf_init', type=str2bool, nargs='?', const=True, def
                     help='override model.hyper_rf_init (fan-in calibrated generator init)')
 parser.add_argument('--save_rate', type=int, default=None,
                     help='override logger.save_rate (checkpoint every N episodes)')
+parser.add_argument('--obs_norm_mode', type=str, default=None, choices=['fixed', 'capacity'],
+                    help='override model.obs_norm_mode; "capacity" divides each per-lane '
+                         'count by that lane storage (length/headway) instead of by the '
+                         'global vehicle_max, making readings comparable across lane lengths')
+parser.add_argument('--obs_capacity_headway', type=float, default=None,
+                    help='override model.obs_capacity_headway (metres per stopped vehicle)')
 parser.add_argument('--dynamic_condition_enabled', type=str2bool, nargs='?', const=True, default=None,
                     help='override model.dynamic_condition_enabled; conditions the '
                          'hypernetwork on a slow EMA of each intersection traffic state')

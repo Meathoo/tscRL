@@ -108,6 +108,21 @@ case "$STAGE" in
             "structdyn|--agent_embedding_mode structural --dynamic_condition_enabled True"
         )
         ;;
+    obsnorm)
+        # Ports BRSC-MAPPO's incoming_occupancy normalisation: divide each
+        # per-lane count by that lane's own storage rather than by a global
+        # constant.  Ablating that dimension cost BRSC +29.3s of transferred
+        # travel time (t=7.15), and the networks here differ enough in road
+        # length (4x4 600-800m, 16x3 100-350m, 7x28 300m) for the fixed
+        # constant to mean different things in each.  See transfer/observation.py.
+        NETWORK="${NETWORK:-cityflow16x3}"
+        SEEDS="${SEEDS:-0 1 2}"
+        EPISODES="${EPISODES:-250}"
+        CONFIGS=(
+            "struct|--agent_embedding_mode structural"
+            "structcap|--agent_embedding_mode structural --obs_norm_mode capacity"
+        )
+        ;;
     zeroshot|finetune)
         NETWORK="${NETWORK:-cityflow4x4}"   # the SOURCE network of the checkpoints
         SEEDS="${SEEDS:-0 1 2}"
@@ -192,7 +207,7 @@ fi
 
 JOBS=()
 case "$STAGE" in
-    stage1|list|smoke|compress|dynamic)
+    stage1|list|smoke|compress|dynamic|obsnorm)
         # smoke gets its own prefix so a 1-episode validation run can never be
         # mistaken for -- or resumed as -- a real stage1 run.
         name_prefix=''
