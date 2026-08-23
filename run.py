@@ -146,6 +146,11 @@ parser.add_argument('--hyper_rf_init', type=str2bool, nargs='?', const=True, def
                     help='override model.hyper_rf_init (fan-in calibrated generator init)')
 parser.add_argument('--save_rate', type=int, default=None,
                     help='override logger.save_rate (checkpoint every N episodes)')
+parser.add_argument('--lr_anneal', type=str, default=None, choices=['none', 'linear'],
+                    help='override model.lr_anneal; linear decays the learning rate to '
+                         'lr_final_frac across the planned update count')
+parser.add_argument('--entropy_anneal', type=str, default=None, choices=['none', 'linear'],
+                    help='override model.entropy_anneal')
 parser.add_argument('--obs_norm_mode', type=str, default=None, choices=['fixed', 'capacity'],
                     help='override model.obs_norm_mode; "capacity" divides each per-lane '
                          'count by that lane storage (length/headway) instead of by the '

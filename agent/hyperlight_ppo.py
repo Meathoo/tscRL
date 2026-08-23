@@ -743,11 +743,35 @@ class HyperLightPPOAgent(RLAgent):
                 self._zero_last_linear(self.value_hypernet)
 
         optimizer_params = self._optimizer_parameters()
+        self.base_learning_rate = float(cfg.get('learning_rate', 3e-4))
         self.optimizer = optim.Adam(
             optimizer_params,
-            lr=float(cfg.get('learning_rate', 3e-4)),
+            lr=self.base_learning_rate,
             eps=float(cfg.get('adam_eps', 1e-5)),
         )
+
+        # Annealing. Nothing in this codebase decayed either the learning rate
+        # or the entropy bonus, so late training kept taking full-size steps
+        # while the entropy term kept pushing the policy off determinism -- and
+        # the evaluation is argmax, so that shows up as a TEST curve that
+        # converges by ~episode 50 and then oscillates for 200 more.
+        self.lr_anneal = str(cfg.get('lr_anneal', 'none')).lower()
+        self.entropy_anneal = str(cfg.get('entropy_anneal', 'none')).lower()
+        for name, value in (('lr_anneal', self.lr_anneal),
+                            ('entropy_anneal', self.entropy_anneal)):
+            if value not in ('none', 'linear'):
+                raise ValueError(f'Unknown {name}: {value}')
+        self.lr_final_frac = float(cfg.get('lr_final_frac', 0.0))
+        self.entropy_final_frac = float(cfg.get('entropy_final_frac', 0.1))
+        # One PPO update per rollout, and the default rollout is exactly one
+        # episode, so the planned update count is the episode budget.
+        decisions = max(1, int(trainer_cfg.get('steps', 3600))
+                        // max(1, int(trainer_cfg.get('action_interval', 10))))
+        updates_per_episode = max(1, decisions // max(1, self.ppo_rollout_steps))
+        self.total_updates = max(
+            1, int(trainer_cfg.get('episodes', 250)) * updates_per_episode
+        )
+        self._updates_done = 0
 
         buffer_size = int(trainer_cfg.get('buffer_size', max(self.ppo_rollout_steps, 1)))
         self.rollout_buffer = deque(maxlen=buffer_size)
@@ -2926,6 +2950,42 @@ class HyperLightPPOAgent(RLAgent):
             return {}
         return self._mean_diagnostics(self._residual_episode_diagnostics)
 
+    def _anneal_factor(self, final_frac):
+        """Linear decay from 1.0 to ``final_frac`` across the planned updates."""
+        progress = min(1.0, self._updates_done / float(self.total_updates))
+        return final_frac + (1.0 - final_frac) * (1.0 - progress)
+
+    def _apply_annealing(self):
+        """Set this update's learning rate and return its entropy coefficient.
+
+        Counts the update first, so the schedule advances even on the paths
+        that bail out below, and so a resumed run continues where it left off
+        rather than jumping back to the full learning rate (``load_model``
+        seeds ``_updates_done``).
+        """
+        self._updates_done += 1
+        if self.lr_anneal == 'linear':
+            lr = self.base_learning_rate * self._anneal_factor(self.lr_final_frac)
+            for group in self.optimizer.param_groups:
+                group['lr'] = lr
+        if self.entropy_anneal == 'linear':
+            return self.entropy_coef * self._anneal_factor(self.entropy_final_frac)
+        return self.entropy_coef
+
+    def current_schedule(self):
+        """Where the schedules stand, for the per-episode log."""
+        if self.lr_anneal == 'none' and self.entropy_anneal == 'none':
+            return {}
+        return {
+            'lr': float(self.optimizer.param_groups[0]['lr']),
+            'entropy_coef': float(
+                self.entropy_coef * self._anneal_factor(self.entropy_final_frac)
+                if self.entropy_anneal == 'linear'
+                else self.entropy_coef
+            ),
+            'progress': min(1.0, self._updates_done / float(self.total_updates)),
+        }
+
     def train(self):
         if self._transitions_since_update < self.ppo_rollout_steps:
             self._last_cos_diagnostics = {}
@@ -2935,6 +2995,7 @@ class HyperLightPPOAgent(RLAgent):
         rollout = list(self.rollout_buffer)
         self.rollout_buffer.clear()
         self._transitions_since_update = 0
+        entropy_coef = self._apply_annealing()
 
         (
             state_t,
@@ -3050,7 +3111,7 @@ class HyperLightPPOAgent(RLAgent):
                     value_loss = (values - b_return).pow(2).mean()
                 value_loss = 0.5 * value_loss
 
-                loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
+                loss = policy_loss + self.value_coef * value_loss - entropy_coef * entropy
                 if self.cos_enabled:
                     loss = loss + cos_reg_loss - self.cos_entropy_coef * cos_entropy
                 if not torch.isfinite(loss):
@@ -3156,6 +3217,12 @@ class HyperLightPPOAgent(RLAgent):
             ),
             'obs_capacity_clip': (
                 None if self.obs_norm_mode == 'fixed' else float(self.obs_capacity_clip)
+            ),
+            # None on the default path so pre-annealing checkpoints still
+            # validate; a scheduled run records the schedule it was trained on.
+            'lr_anneal': None if self.lr_anneal == 'none' else self.lr_anneal,
+            'entropy_anneal': (
+                None if self.entropy_anneal == 'none' else self.entropy_anneal
             ),
             'dynamic_spec': self.dynamic_spec,
             'dynamic_hidden_dim': (
@@ -3302,6 +3369,7 @@ class HyperLightPPOAgent(RLAgent):
                 None if self.value_hypernet is None else self.value_hypernet.state_dict()
             ),
             'optimizer': self.optimizer.state_dict(),
+            'updates_done': int(self._updates_done),
             'architecture_version': 4,
             'architecture': self._architecture_signature(),
             'embedding_mode': self.embedding_mode,
@@ -3391,6 +3459,14 @@ class HyperLightPPOAgent(RLAgent):
                 self.cos_selector.load_state_dict(checkpoint['cos_selector'])
             if 'cos_team_projector' in checkpoint:
                 self.cos_team_projector.load_state_dict(checkpoint['cos_team_projector'])
+        # Resuming must not restart the schedule: without this a run that gets
+        # interrupted (WSL/Docker drops, the .232 reboot) silently trains the
+        # rest of its episodes at the full learning rate.
+        resumed_updates = checkpoint.get('updates_done')
+        if resumed_updates is None and isinstance(e, int):
+            resumed_updates = int(e)
+        if resumed_updates is not None:
+            self._updates_done = int(resumed_updates)
         if 'optimizer' in checkpoint:
             try:
                 self.optimizer.load_state_dict(checkpoint['optimizer'])

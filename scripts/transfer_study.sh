@@ -123,6 +123,20 @@ case "$STAGE" in
             "structcap|--agent_embedding_mode structural --obs_norm_mode capacity"
         )
         ;;
+    anneal)
+        # Does decaying the learning rate (and the entropy bonus) settle the
+        # oscillation that makes `last` a noisy sample on Ingolstadt? The
+        # control is stage1's own `struct`, so only the two scheduled arms are
+        # new here. Judge these on the spread of the late TEST points, not on
+        # the final value.
+        NETWORK="${NETWORK:-sumo1x21}"
+        SEEDS="${SEEDS:-0 1 2}"
+        EPISODES="${EPISODES:-250}"
+        CONFIGS=(
+            "structlr|--agent_embedding_mode structural --lr_anneal linear"
+            "structlrent|--agent_embedding_mode structural --lr_anneal linear --entropy_anneal linear"
+        )
+        ;;
     baseline)
         # One non-HyperLight method per invocation, driven by AGENT. Output
         # already lands under <world>_<agent>/, so the tag can be the agent name
@@ -220,7 +234,7 @@ fi
 
 JOBS=()
 case "$STAGE" in
-    stage1|list|smoke|compress|dynamic|obsnorm|baseline)
+    stage1|list|smoke|compress|dynamic|obsnorm|baseline|anneal)
         # smoke gets its own prefix so a 1-episode validation run can never be
         # mistaken for -- or resumed as -- a real stage1 run.
         name_prefix=''

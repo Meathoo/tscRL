@@ -32,6 +32,17 @@ model:
   clip_vf: 0.2
   entropy_coef: 0.01
   value_coef: 0.5
+
+  # Neither the learning rate nor the entropy bonus decayed, so late training
+  # kept taking full-size steps while entropy kept pushing the policy off
+  # determinism -- and evaluation is argmax. On Ingolstadt the TEST curve
+  # converges by ~episode 50 and then oscillates for 200 more, which is what
+  # makes `last` a noisy sample and `best` biased toward the noisier arms.
+  # linear decays across the planned update count (episodes x updates/episode).
+  lr_anneal: none               # none | linear
+  lr_final_frac: 0.0            # linear: learning_rate x this at the end
+  entropy_anneal: none          # none | linear
+  entropy_final_frac: 0.1       # keep a floor rather than decaying to zero
   reward_scale: 0.05
   reward_mode: queue   # queue | pressure_abs | queue_pressure
   pressure_balance_coef: 0.2     # queue_pressure: penalty weight for abs(in_count - out_count)

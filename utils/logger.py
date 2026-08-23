@@ -177,6 +177,8 @@ def build_config(args):
         'hyper_chunk_generator_hidden': getattr(args, 'hyper_chunk_generator_hidden', None),
         'agent_embedding_dim': getattr(args, 'agent_embedding_dim', None),
         'hyper_rf_init': getattr(args, 'hyper_rf_init', None),
+        'lr_anneal': getattr(args, 'lr_anneal', None),
+        'entropy_anneal': getattr(args, 'entropy_anneal', None),
         'obs_norm_mode': getattr(args, 'obs_norm_mode', None),
         'obs_capacity_headway': getattr(args, 'obs_capacity_headway', None),
         'dynamic_condition_enabled': getattr(args, 'dynamic_condition_enabled', None),
