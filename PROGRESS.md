@@ -209,12 +209,54 @@ best TEST（訓練中最佳）
 
 `rf_init` 對 flat 頭沒幫助（1231 → 1247，略差），但對 chunked 頭有效——尤其是把標準差砍半（75.24 → 31.49）。跟 (e) 的「chunked 收尾不穩」對得起來：**`rf_init` 治的是穩定性，不是平均值**。
 
+16x3 的同一組（2026-08-20 完成，`scripts/q_16x3.txt`）：
+
+| 設定 | last (mean ± std) |
+|---|---:|
+| **awrf** | **177.81 ± 1.23** |
+| c8rf | 179.50 ± 3.28 |
+| aw | 180.78 ± 4.02 |
+
+同樣的規律：`rf_init` 把 aw 的 ±4.02 壓到 ±1.23。
+
+**(h) 動態車流 condition（2026-08-22～23，三個路網）——負面結果**
+
+對照只差一個變因：兩臂都用 structural condition，只有一臂多了慢速車流 EMA（設計見 `dynamic/DYNAMIC.md`）。
+
+| 路網 | 特性 | struct | structdyn | 結果 |
+|---|---|---:|---:|---|
+| 4x4（本機） | 同質、自由流（queue 0.78） | 314.81 ± 0.09 | 315.27 ± 0.71 | 無效果 |
+| Ingolstadt21（.237） | 異質 | 200.58 ± 0.96（best） | 199.06 ± 0.16（best） | +0.75%，可忽略 |
+| 7x28（.232） | 同質、重度壅塞（queue ~14） | ~1294 | ~1388 | **惡化 110 秒** |
+
+7x28 在 ep150 三個 seed 完全不重疊（struct 1260–1333、structdyn 1387–1426），而且 `struct` 仍在下降、`structdyn` 卡在 1385–1405 的平台。
+
+**關鍵診斷：它不是壞掉，是真的學到比較差的解。** structdyn 的訓練 loss **更低**（0.0011 vs 0.0019）但 reward 更差（−288 vs −271），沒有 NaN、沒有發散。最可能的機制是壅塞時 EMA 特徵持續漂移，生成的權重跟著漂，policy 一直在追移動目標；而 `struct` 的權重不動反而能穩定下降。
+
+**但書（結論只對「這一版實作、這組設定」成立）**：半衰期只試過 60 個決策步（刻意沒掃）；注入點只有 `meta` 一處，同時影響 actor 與 critic，沒試過只給其中一邊或改成有界調變；`dynamic_scale=1.0` 且無上界，encoder 可以把調變幅度學到任意大——7x28 的失效模式看起來正是這個。壓小 scale 是唯一有機會翻盤的便宜實驗，但先前 FiLM 的教訓（有界調變比「把身分向量直接接到輸入」還弱）暗示它多半只會從「有害」回到「無效」。
+
+**這滿足了當初設定的 kill test**，因此 B4（movement encoder + 排列不變 phase head）的投入前提被否定，該工程暫停。
+
+**(i) 整條線的總結**
+
+| 條件化訊號 | 同質自由流 | 異質 | 同質壅塞 |
+|---|---|---|---|
+| 路口身分（learned） | 無效 | 輸 43 秒 | — |
+| 路口結構（structural） | 無效（特徵≈常數） | **贏 43 秒** | — |
+| 結構 + 車流狀態 | 無效 | +0.75% | **輸 110 秒** |
+
+> **唯一有價值的條件化訊號是路口的「結構」，而且只在結構真的會變的路網上有價值。**
+> 身分條件化在同質網上無效；狀態條件化無效，且在壅塞網上有害。
+
+注意 **Ingolstadt 的結果是同一張網內的條件化比較，不是遷移結果**——那些 run 全部從零訓練（`transfer_checkpoint: null`）。4x4 → Ingolstadt 的遷移仍卡在 B4：`state_dim` 剛好都是 32，但 `action_dim` 是 8 vs 4，actor 最後一層裝不下；即使維度湊巧全對，補零車道向量的語義在兩張網裡也不同。
+
 ### 6.3 執行中 / 待辦
 
-- **執行中（2026-08-22 起）**：動態車流 condition 的 `struct` vs `structdyn` 對照，三台各一個路網——
-  `.232` 跑最慢的 7x28（6 job，約 38h）、`.237` 跑 Ingolstadt21（6 job，約 7.5h）、本機跑 4x4（6 job，約 8h）。
-  設計、特徵表與 PPO 一致性的處理方式在 **`dynamic/DYNAMIC.md`**。16x3 尚未排。
-- (a)–(g) 七組實驗已完成，數字在 §6.2。
+- (a)–(i) 已完成，數字在 §6.2。動態 condition 的 7x28 那批在 2026-08-23 收尾中（其餘兩個路網已完成）。
+- `scripts/q_4x4.txt` / `q_16x3.txt` 的 chunked study 格子**其實早在 2026-08-20 就跑完了**，佇列檔沒清而已；重跑會被 `resilient_run.sh` 判定「已完成到 episode 250」直接結束。
+- **已否定、不再投入**：動態車流 condition（見 (h)）；連帶 B4（movement encoder + 排列不變 phase head）暫停。
+- **仍待辦**：4x4 → Ingolstadt 的跨路網遷移（卡在 B4，`action_dim` 8 vs 4）；從 BRSC-MAPPO 移植 boundary randomization 與 scale-consistency loss；論文用的圖表與 `docs/` 整理。
+- 動態 condition 的實作注意事項（若日後重啟）：condition 一變成 state-dependent，就必須把特徵存進 rollout buffer 並穿過 `remember` / `_rollout_tensors` / `_policy_value`，否則 PPO 的 log-prob 對不上——**不會報錯，只會靜靜地算錯 ratio**。`dynamic/` 已實作並有 18 個測試釘住，關閉時與改動前逐位元相同。
 - **待辦**：動態車流 condition（arrival rate / queue slope 的慢速 EMA，對應 BRSC v2 的 Dynamic Traffic-Role FiLM）；B4（movement encoder + 排列不變 phase head）；從 BRSC-MAPPO 移植 boundary randomization 與 scale-consistency loss；本機 `scripts/q_4x4.txt` / `q_16x3.txt` 的 chunked study 空格。
 - 動態 condition 的實作注意事項：condition 一變成 state-dependent，就必須把特徵存進 rollout buffer 並穿過 `remember` / `_rollout_tensors` / `_policy_value`，否則 PPO 的 log-prob 對不上——**不會報錯，只會靜靜地算錯 ratio**。
 - 為什麼值得做動態 condition：(a) 顯示在同質路網上，表達力最強的 `learned` 打不贏幾乎是常數的 `structural`，(e) 顯示 `structural` 的優勢只在異質路網出現。也就是說**「跟著身分走」的條件化在同質網上沒有價值**，動態（跟著狀態走）是那裡唯一還沒試過的槓桿。
