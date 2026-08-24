@@ -27,6 +27,7 @@
 #   scripts/transfer_study.sh compress            # chunked vs flat, same network
 #   scripts/transfer_study.sh dynamic             # traffic-state conditioning
 #   scripts/transfer_study.sh features            # structural feature subset
+#   scripts/transfer_study.sh budget              # 500-episode flat vs chunked
 #
 # Extra seeds for an existing stage are just a SEEDS override, e.g.
 #   WORLD=sumo NETWORK=sumo1x21 SEEDS="3 4" scripts/transfer_study.sh stage1
@@ -136,6 +137,38 @@ case "$STAGE" in
         CONFIGS=(
             "structlr|--agent_embedding_mode structural --lr_anneal linear"
             "structlrent|--agent_embedding_mode structural --lr_anneal linear --entropy_anneal linear"
+        )
+        ;;
+    budget)
+        # Is chunked actually better, or just faster?  On Ingolstadt21 c8 beats
+        # the flat head at 250 episodes (210.44 vs 227.26) but the advantage is
+        # all early: over the first 100 episodes c8's TEST mean is 312 against
+        # 371, while from episode 150 on they are 270 vs 285 with a within-run
+        # spread of 27-35.  Doubling the budget asks whether the flat head is
+        # simply undertrained.
+        #
+        # BOTH arms get the longer budget.  Running only the flat one would not
+        # settle anything -- if it caught up, the obvious objection is that
+        # chunked would have improved too.
+        #
+        # Fresh prefixes rather than resuming the 250-episode runs: those stop
+        # at a checkpoint whose optimizer/RNG restoration has never been
+        # verified, and a half-resumed arm would confound exactly the thing
+        # under test.  The cost is re-running the first 250 episodes, which
+        # buys a check instead: with lr_anneal/entropy_anneal both `none`,
+        # total_updates is unused, so episodes 0-249 must reproduce the
+        # existing runs to the digit.  If they do not, something else drifted.
+        #
+        # Read these on the late-phase TEST mean, not on `best`: `best` is a min
+        # over eval points, so 500 episodes draws twice as many samples as 250
+        # and lowers it for both arms regardless of what the policy is doing.
+        NETWORK="${NETWORK:-sumo1x21}"
+        SEEDS="${SEEDS:-0 1 2}"
+        EPISODES="${EPISODES:-500}"
+        PARALLEL="${PARALLEL:-6}"
+        CONFIGS=(
+            "learned500|--agent_embedding_mode learned"
+            "c8learned500|--agent_embedding_mode learned --hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16"
         )
         ;;
     features)
@@ -269,7 +302,7 @@ fi
 
 JOBS=()
 case "$STAGE" in
-    stage1|list|smoke|compress|dynamic|obsnorm|baseline|anneal|features)
+    stage1|list|smoke|compress|dynamic|obsnorm|baseline|anneal|features|budget)
         # smoke gets its own prefix so a 1-episode validation run can never be
         # mistaken for -- or resumed as -- a real stage1 run.
         name_prefix=''
