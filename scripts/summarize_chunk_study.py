@@ -84,8 +84,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--network', default='cityflow4x4')
     parser.add_argument('--agent', default='hyperlight_mappo')
-    parser.add_argument('--statistic', default='last', choices=['last', 'tail5', 'best'])
-    parser.add_argument('--tail', type=int, default=5, help='TEST points averaged by tail5')
+    # tail5 by default. Evaluation is deterministic -- the same checkpoint
+    # scores the same travel time every time -- so the spread along a TEST
+    # curve is the policy genuinely moving between episodes, not measurement
+    # noise. That makes `last` one draw from that movement, and `best` a
+    # minimum over ~50 correlated draws whose optimistic bias grows with how
+    # much an arm oscillates, which flatters exactly the unstable arms.
+    # Averaging the tail is the only one of the three that estimates what the
+    # policy typically does late in training.
+    parser.add_argument('--statistic', default='tail5', choices=['last', 'tail5', 'best'])
+    parser.add_argument('--tail', type=int, default=10, help='TEST points averaged by tail5')
     parser.add_argument('--root', default='data/output_data/tsc')
     parser.add_argument('--world', default='cityflow', choices=['cityflow', 'sumo'],
                         help='run.py writes into <world>_<agent>/<network>, so the '

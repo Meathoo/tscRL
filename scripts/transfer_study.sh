@@ -145,10 +145,15 @@ case "$STAGE" in
         # mplight and frap are NOT runnable on sumo1x21: they look the network up
         # in a hand-written per-network block (phase_pairs / valid_acts /
         # lane_order) that exists for the grids, cologne1 and cologne3 only.
+        # EXTRA appends run.py flags; the stage itself takes no positional
+        # arguments, so passing them after the stage name is silently ignored.
+        # ppo.yml sets early_stop_patience=8, so the PPO family stops around
+        # episode 65 while dqn and colight run the full budget -- pass
+        # EXTRA="--early_stop_patience 0" to put them on equal footing.
         NETWORK="${NETWORK:-cityflow4x4}"
         SEEDS="${SEEDS:-0 1 2}"
         EPISODES="${EPISODES:-250}"
-        CONFIGS=("${AGENT}|")
+        CONFIGS=("${AGENT}|${EXTRA:-}")
         ;;
     zeroshot|finetune)
         NETWORK="${NETWORK:-cityflow4x4}"   # the SOURCE network of the checkpoints

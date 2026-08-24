@@ -201,6 +201,7 @@ def build_config(args):
     trainer_overrides = {
         'episodes': getattr(args, 'episodes', None),
         'resume_episode': getattr(args, 'resume_episode', None),
+        'early_stop_patience': getattr(args, 'early_stop_patience', None),
     }
     for key, value in trainer_overrides.items():
         if value is not None:

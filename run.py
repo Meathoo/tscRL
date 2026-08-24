@@ -146,6 +146,10 @@ parser.add_argument('--hyper_rf_init', type=str2bool, nargs='?', const=True, def
                     help='override model.hyper_rf_init (fan-in calibrated generator init)')
 parser.add_argument('--save_rate', type=int, default=None,
                     help='override logger.save_rate (checkpoint every N episodes)')
+parser.add_argument('--early_stop_patience', type=int, default=None,
+                    help='override trainer.early_stop_patience; 0 disables early stopping. '
+                         'ppo.yml sets 8, so the PPO-family baselines stop far short of the '
+                         'episode budget the other methods run')
 parser.add_argument('--lr_anneal', type=str, default=None, choices=['none', 'linear'],
                     help='override model.lr_anneal; linear decays the learning rate to '
                          'lr_final_frac across the planned update count')
