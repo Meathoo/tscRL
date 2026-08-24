@@ -417,7 +417,31 @@ class ColightNet(nn.Module):
                 h = self.output_layer(h)
         return h
 
+#: Value written into the Q slot of a phase an intersection does not have.
+#: It only has to sit below every reachable Q-value: rewards are a negative
+#: lane count (scaled by 12), so with gamma=0.95 a real Q is on the order of
+#: -1e2..-1e3.  A finite sentinel rather than -inf because ``train`` feeds this
+#: same output in as its MSE target, and -inf would make those entries nan.
+INVALID_ACTION_Q = -1e6
+
+
 class MaskedOutput(nn.Module):
+    """Force the Q of phases an intersection does not have below every real one.
+
+    This used to *multiply* by the 0/1 mask, which drove invalid phases to
+    exactly 0.  Acting was unaffected -- ``get_action`` slices
+    ``action_vec[0:phase_length]`` before its argmax -- but ``train`` does
+
+        target = rewards + gamma * torch.max(out, dim=1)[0]
+
+    over the full padded row.  Rewards here are negative, so every real Q is
+    negative and that 0 always won the max: the bootstrap term collapsed to 0 at
+    every intersection with fewer than ``max(phase_lengths)`` phases, which is
+    an effective gamma of 0 -- a purely myopic agent.  On the homogeneous
+    CityFlow grids the mask is all ones and nothing happens; on Ingolstadt21 it
+    hit 15 of 21 intersections.
+    """
+
     def __init__(self, mask, batch_size, action_space):
         super(MaskedOutput, self).__init__()
         self.batch_size = batch_size
@@ -425,9 +449,8 @@ class MaskedOutput(nn.Module):
         self.action_space = action_space
 
     def forward(self, x):
-        # Apply the mask to the output
-        # x = torch.exp(x)
-        masked_output = x.reshape(-1 ,self.mask.shape[0], self.action_space.n) * self.mask
+        masked_output = x.reshape(-1, self.mask.shape[0], self.action_space.n)
+        masked_output = masked_output.masked_fill(~self.mask, INVALID_ACTION_Q)
         masked_output = masked_output.reshape(-1, self.mask.shape[-1])
         return masked_output
 
