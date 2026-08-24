@@ -846,7 +846,8 @@ class HyperLightPPOAgent(RLAgent):
             f"value_arch={value_arch}/{self.hyper_critic_adapter_mode}, "
             f"hyper_heads={self.hyper_head_mode}, "
             f"chunk={self.hyper_actor_chunk_size}:{self.hyper_critic_chunk_size}"
-            f"/{self.hyper_chunk_embed_dim}/g{self.hyper_chunk_generator_hidden}, "
+            f"/{self.hyper_chunk_embed_dim}/g{self.hyper_chunk_generator_hidden}"
+            f"/{self.actor_rf_init_config['chunk_rf_mode']}, "
             f"objective={self.policy_objective}, "
             f"embedding={self.embedding_mode}, topology={self.topology_aware_embedding}, "
             f"dynamic={self.dynamic_enabled}"
@@ -3249,6 +3250,7 @@ class HyperLightPPOAgent(RLAgent):
             'hyper_critic_chunk_size': int(self.hyper_critic_chunk_size),
             'hyper_chunk_embed_dim': int(self.hyper_chunk_embed_dim),
             'hyper_chunk_generator_hidden': int(self.hyper_chunk_generator_hidden),
+            'hyper_chunk_rf_mode': str(self.actor_rf_init_config['chunk_rf_mode']),
             'actor_hidden': [int(self.actor_hidden1), int(self.actor_hidden2)],
             'value_hidden': list(self.value_hidden),
             'hyper_adapter_mode': self.hyper_adapter_mode,

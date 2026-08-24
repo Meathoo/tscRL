@@ -160,6 +160,21 @@ model:
   # the wide output head then reads from this width instead of
   # trunk_dim + chunk_embed_dim, 64 is slightly cheaper than 0).
   hyper_chunk_generator_hidden: 0
+  # How hyper_rf_init lays the target-layer init into a chunked head (ignored by
+  # the other head modes, and by chunked when hyper_rf_init is off).
+  #   shared:    one orthogonal chunk_size x in_dim block in the generator bias,
+  #              which every chunk reads -- so the generated target matrix starts
+  #              as that block tiled down the rows. The 128x160 critic layer comes
+  #              out at effective rank ~13 of 128, and only the random chunk-code
+  #              path breaks the tie, which is a per-seed amount of symmetry
+  #              breaking. This is what every result before 2026-08-24 used.
+  #   per_chunk: one orthogonal out_dim x in_dim draw for the whole layer -- the
+  #              same one a flat head would make -- sliced across the chunks and
+  #              carried by the chunk-code parameters that already exist. Restores
+  #              effective rank ~128 at no parameter cost. Needs
+  #              hyper_chunk_embed_dim >= n_chunks (16 at chunk_size 8) and, when
+  #              hyper_chunk_generator_hidden > 0, that width >= n_chunks too.
+  hyper_chunk_rf_mode: shared
 
 # shared base + small hypernetwork residual delta
   # generated: original per-intersection generated MLP weights

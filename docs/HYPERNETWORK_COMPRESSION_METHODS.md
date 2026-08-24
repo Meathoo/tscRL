@@ -267,6 +267,13 @@ hyper_chunk_embed_dim=16
 
 （`hyper_adapter_mode` 仍然維持 `generated`，因為概念上這還是「生成完整權重」，只是生成方式換了。）
 
+這份文件寫於 2026-08-10，比 `hyper_rf_init` 早。之後加的兩個 chunked 專屬旋鈕不在上面：
+
+| 旋鈕 | 作用 | 出處 |
+|---|---|---|
+| `hyper_chunk_generator_hidden` | 在 concat 之後插一層 hidden，拆掉「跨路口變異被 tile」的對稱（§5.3 對這件事的敘述不準確） | `CHUNK_SIZE_AND_EMBED_DIM.md` §1 |
+| `hyper_chunk_rf_mode` | `hyper_rf_init` 在 chunked 上要把目標層初始化寫到哪裡。預設 `shared` 會讓開局 rank 塌掉，`per_chunk` 不會 | `CHUNK_SIZE_AND_EMBED_DIM.md` §7 |
+
 ---
 
 ## 6. 三種方法的參數量對照

@@ -2,7 +2,8 @@
 
 這份檔案記錄「這台機器上的 LibSignal 工作目錄」目前的整理狀態、研究進度、以及在**另一台機器 `git pull` 之後要怎麼接續使用**。目標是讓另一台機器 clone/pull 下來後，程式碼與筆記完整、`docker` container 能跑，且看得懂目前實驗做到哪裡。
 
-最後更新：2026-08-22（本地時間）。跨路網 transfer 那條線的進度在 §6，程式細節在 `transfer/TRANSFER.md`。
+最後更新：2026-08-24（本地時間）。跨路網 transfer 那條線的進度在 §6，程式細節在 `transfer/TRANSFER.md`。
+最新一筆是 §6.2 (j)：chunked 的 rf 初始化 `hyper_chunk_rf_mode`，驗證實驗 2026-08-24 起在 `.232` 上跑。
 
 ---
 
@@ -250,9 +251,44 @@ best TEST（訓練中最佳）
 
 注意 **Ingolstadt 的結果是同一張網內的條件化比較，不是遷移結果**——那些 run 全部從零訓練（`transfer_checkpoint: null`）。4x4 → Ingolstadt 的遷移仍卡在 B4：`state_dim` 剛好都是 32，但 `action_dim` 是 8 vs 4，actor 最後一層裝不下；即使維度湊巧全對，補零車道向量的語義在兩張網裡也不同。
 
+**(j) chunked 的 rf 初始化：`hyper_chunk_rf_mode`（2026-08-24）**
+
+嚴格說這條屬於 chunked study 而不是 transfer，但它是在這個分支上做的，先記在這裡。
+
+`hyper_rf_init` 在 chunked 頭上是把一塊正交的 `chunk_size × in_dim` 寫進 generator 的
+**輸出 bias**，而 bias 是該層所有 chunk 共用的——所以生成的目標權重開局是「同一塊往下貼 n 次」。
+實測生成的 critic 128×160 層的 effective rank（奇異值參與比，滿分 128）：
+
+| 設定 | 開局 effective rank |
+|---|---:|
+| flat，rf 關（`aw` / `struct`） | 90.9 |
+| flat，rf 開（`awrf`） | 128.0 |
+| c8，rf 關（`c8` / `c8struct`） | 59.1 |
+| **c8，rf 開（`c8rf`）** | **13.4** |
+| **c8 + `per_chunk`（`c8rfpc`）** | **127.7** |
+| c8g64，rf 開（`c8g64rf`） | 12.3 |
+| c8g64 + `per_chunk`（`c8g64rfpc`） | 127.9 |
+
+**同一招在 flat 上把 90.9 拉到 128，在 chunked 上卻把 59.1 壓到 13.4。**
+修法 `hyper_chunk_rf_mode: per_chunk` 抽一整塊 `out_dim × in_dim` 正交初始化（就是 flat 會用的那個），
+切成 n 條經由 chunk code 路徑分給各 chunk——用的是本來就配置好的 `W_c`，**零參數成本**。
+需要 `E ≥ n_chunks`（c8 之下最大 16，預設 E=16 剛好夠）。預設仍是 `shared`，舊結果全部可重現。
+細節在 `docs/CHUNK_SIZE_AND_EMBED_DIM.md` §7，11 個測試在
+`tests/test_chunked_hypernetwork.py::ChunkedRFInitModeTests`。
+
+> ⚠️ **不要預設它會贏。** 上面 (g) 的 7x28 顯示 `rf_init` 把 `c8` 的 std 從 ±75.24 砍到
+> ±31.49——也就是說 `rf_init` **同時**讓 rank 更低、讓結果更穩。所以「rank 低造成飄」
+> 這個因果被現有數據打臉了（`CHUNK_SIZE_AND_EMBED_DIM.md` §7.4 有完整論證）。
+> 真實的反向可能是：低秩初始化本身就是一種正則化，可能正是 `rf_init` 幫到 chunked 的原因。
+> `per_chunk` 目前只能宣稱「保留 fan-in 校準、拿掉 rank 塌掉這個副作用」。
+
 ### 6.3 執行中 / 待辦
 
 - (a)–(i) 已完成，數字在 §6.2。動態 condition 的 7x28 那批在 2026-08-23 收尾中（其餘兩個路網已完成）。
+- **2026-08-24 起在 `.232` 上跑 (j) 的驗證**：`c8rf` vs `c8rfpc`，Ingolstadt21、learned embedding、
+  3 seeds、250 episodes，共 6 個 run（`TAGS="c8rf c8rfpc" SEEDS="0 1 2" scripts/ingolstadt_study.sh run`）。
+  **判準是 seedSD 不是 mean**，理由見 (j) 的但書。本機那筆 `c8rf_ing21_seed0` 不併入——
+  它是 12 核本機跑的，thread 設定不同（見 §6.4 第 3 點）。
 - `scripts/q_4x4.txt` / `q_16x3.txt` 的 chunked study 格子**其實早在 2026-08-20 就跑完了**，佇列檔沒清而已；重跑會被 `resilient_run.sh` 判定「已完成到 episode 250」直接結束。
 - **已否定、不再投入**：動態車流 condition（見 (h)）；連帶 B4（movement encoder + 排列不變 phase head）暫停。
 - **仍待辦**：4x4 → Ingolstadt 的跨路網遷移（卡在 B4，`action_dim` 8 vs 4）；從 BRSC-MAPPO 移植 boundary randomization 與 scale-consistency loss；論文用的圖表與 `docs/` 整理。
@@ -284,3 +320,4 @@ best TEST（訓練中最佳）
 
 - `scripts/transfer_study.sh` — stage `stage1` / `zeroshot` / `finetune` / `compress` / `smoke`；`WORLD=sumo NETWORK=sumo1x21` 切到 Ingolstadt；加 seed 只要 `SEEDS="3 4"`。
 - `scripts/resilient_run_world.sh` — `resilient_run.sh` 的泛化版（world 可選）。純評估的 job（`--train_model False`）不走這支，因為它用「checkpoint 有沒有到目標 episode」判斷完成，而評估不寫 checkpoint，會無限重試。
+- `scripts/ingolstadt_study.sh` — Ingolstadt21 專用的 tag × seed 派工（`list` / `job` / `run`），內建續跑與 load-aware 節流（`TARGET_JOBS`）。**它是 `chunk_study.sh` + `resilient_run.sh` 的獨立副本，這是刻意的**：bash 是用 byte offset 邊跑邊讀腳本的，原地編輯一支正在執行的 `.sh` 會弄壞執行中的 job，所以需要改 tag 時改這支、不動那兩支。2026-08-24 才進版控（先前只在本機）。

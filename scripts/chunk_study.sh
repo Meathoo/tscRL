@@ -49,6 +49,11 @@ CONFIGS=(
     "c8g64hh256|--hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16 --hyper_chunk_generator_hidden 64 --hyper_hidden 256"
     "c8split|--hyper_head_mode chunked --hyper_chunk_embed_dim 16 --hyper_actor_chunk_size 16 --hyper_critic_chunk_size 4"
     "c8res|--hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16 --hyper_residual True --hyper_residual_mode full --hyper_residual_scale 1.0"
+    # per_chunk rf init: same parameter count as c8rf / c8g64rf, but the generated
+    # target layer starts at the flat head's effective rank instead of ~1/10 of it.
+    # Compare seed spread against c8rf and c8g64rf, not just the mean.
+    "c8rfpc|--hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16 --hyper_rf_init True --hyper_chunk_rf_mode per_chunk"
+    "c8g64rfpc|--hyper_head_mode chunked --hyper_chunk_size 8 --hyper_chunk_embed_dim 16 --hyper_chunk_generator_hidden 64 --hyper_rf_init True --hyper_chunk_rf_mode per_chunk"
 )
 
 case "$STAGE" in

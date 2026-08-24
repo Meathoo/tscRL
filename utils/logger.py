@@ -175,6 +175,7 @@ def build_config(args):
         'hyper_actor_chunk_size': getattr(args, 'hyper_actor_chunk_size', None),
         'hyper_critic_chunk_size': getattr(args, 'hyper_critic_chunk_size', None),
         'hyper_chunk_generator_hidden': getattr(args, 'hyper_chunk_generator_hidden', None),
+        'hyper_chunk_rf_mode': getattr(args, 'hyper_chunk_rf_mode', None),
         'agent_embedding_dim': getattr(args, 'agent_embedding_dim', None),
         'hyper_rf_init': getattr(args, 'hyper_rf_init', None),
         'lr_anneal': getattr(args, 'lr_anneal', None),

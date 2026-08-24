@@ -136,6 +136,14 @@ parser.add_argument('--hyper_critic_chunk_size', type=int, default=None,
 parser.add_argument('--hyper_chunk_generator_hidden', type=int, default=None,
                     help='override model.hyper_chunk_generator_hidden; 0 keeps the '
                          'single-Linear (purely additive) chunk generator')
+parser.add_argument('--hyper_chunk_rf_mode', type=str, default=None,
+                    choices=['shared', 'per_chunk'],
+                    help='override model.hyper_chunk_rf_mode: how hyper_rf_init lays '
+                         'the target-layer init into a chunked head. shared puts one '
+                         'block in the generator bias that every chunk reads, so the '
+                         'generated matrix starts rank-deficient; per_chunk slices a '
+                         'full-size init across the chunks via the chunk codes at no '
+                         'extra parameter cost (needs hyper_chunk_embed_dim >= n_chunks)')
 parser.add_argument('--hyper_hidden', type=str, default=None,
                     help='override model.hyper_hidden, e.g. "256" or "128,64"')
 parser.add_argument('--value_hyper_hidden', type=str, default=None,

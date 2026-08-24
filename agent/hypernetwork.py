@@ -105,6 +105,7 @@ def build_generated_param_init_config(
         'rf_mode': cfg.get('hyper_rf_mode', 'fan_in'),
         'rf_hidden_gain': float(cfg.get('hyper_rf_hidden_gain', math.sqrt(2.0))),
         'rf_output_gain': float(output_gain),
+        'chunk_rf_mode': str(cfg.get('hyper_chunk_rf_mode', 'shared')).lower(),
     }
 
 
@@ -416,6 +417,24 @@ class ChunkedHyperNetwork(nn.Module):
     and the meta vector interact and gives each chunk its own agent-dependent
     block. It is usually also *cheaper*, because the wide output head then reads
     from ``generator_hidden`` units instead of ``trunk_dim + chunk_embed_dim``.
+
+    ``chunk_rf_mode`` picks which construction ``rf_init`` uses:
+
+    ``shared``
+        The historical one. One orthogonal ``chunk_size x in_dim`` block goes
+        into the generator's output *bias*, which every chunk of the layer
+        reads, so the generated target matrix starts as that single block tiled
+        down the rows. The tie is only broken by the random chunk-code path, and
+        the generated 128x160 critic layer starts with an effective rank near 13
+        instead of 128 -- worse conditioning than the same head with rf_init off.
+    ``per_chunk``
+        Draws *one* orthogonal ``out_dim x in_dim`` init for the whole target
+        layer -- the same draw the flat head would make -- slices it into
+        row-blocks and routes block ``j`` through the chunk-code path, which
+        already has the parameters to carry it. The chunk codes are initialized
+        to an orthonormal basis so ``W_c c_j`` reproduces block ``j`` exactly.
+        Costs nothing extra and needs ``chunk_embed_dim >= n_chunks`` (plus
+        ``generator_hidden >= n_chunks`` when a hidden generator is used).
     """
 
     def __init__(
@@ -435,6 +454,7 @@ class ChunkedHyperNetwork(nn.Module):
         rf_mode='fan_in',
         rf_hidden_gain=math.sqrt(2.0),
         rf_output_gain=1.0,
+        chunk_rf_mode='shared',
     ):
         super().__init__()
         self.output_dim = int(output_dim)
@@ -454,6 +474,17 @@ class ChunkedHyperNetwork(nn.Module):
         if generator_hidden < 0:
             raise ValueError('hyper_chunk_generator_hidden must be non-negative')
         self.generator_hidden = generator_hidden
+
+        chunk_rf_mode = str(chunk_rf_mode or 'shared').lower()
+        if chunk_rf_mode not in ('shared', 'per_chunk'):
+            raise ValueError(f"Unknown hyper_chunk_rf_mode: {chunk_rf_mode}")
+        if chunk_rf_mode == 'per_chunk' and not rf_init:
+            raise ValueError(
+                'hyper_chunk_rf_mode=per_chunk only describes how hyper_rf_init '
+                'lays down the target-layer init, so it does nothing on its own: '
+                'enable hyper_rf_init or set hyper_chunk_rf_mode back to shared'
+            )
+        self.chunk_rf_mode = chunk_rf_mode
 
         kind = str(hypernet_type or 'mlp').lower()
         if kind not in ('linear', 'lin', 'mlp', 'nonlinear'):
@@ -497,7 +528,19 @@ class ChunkedHyperNetwork(nn.Module):
                 init_gain = float(
                     rf_output_gain if layer_idx == layer_count - 1 else rf_hidden_gain
                 )
-                self._init_rf_generator(generator, rows, in_dim, init_gain)
+                if chunk_rf_mode == 'per_chunk':
+                    self._init_rf_per_chunk(
+                        embedding,
+                        generator,
+                        trunk_dim,
+                        generator_hidden,
+                        rows,
+                        in_dim,
+                        n_chunks,
+                        init_gain,
+                    )
+                else:
+                    self._init_rf_generator(generator, rows, in_dim, init_gain)
 
             self.chunk_embeddings.append(embedding)
             self.generators.append(generator)
@@ -527,7 +570,12 @@ class ChunkedHyperNetwork(nn.Module):
 
     @staticmethod
     def _init_rf_generator(generator, rows, in_dim, gain):
-        """Put a correctly scaled target-layer init in the bias, deviations in the weight."""
+        """Put a correctly scaled target-layer init in the bias, deviations in the weight.
+
+        The bias is shared by every chunk of the layer, so all ``n_chunks`` row
+        blocks of the generated target matrix start out as the *same* block. See
+        ``_init_rf_per_chunk`` for the variant that gives each chunk its own.
+        """
         output_layer = LayerwiseHyperNetwork._last_linear(generator)
         with torch.no_grad():
             default_weight = output_layer.weight.new_empty(rows, in_dim)
@@ -539,6 +587,92 @@ class ChunkedHyperNetwork(nn.Module):
             if output_layer.bias is not None:
                 output_layer.bias.zero_()
                 output_layer.bias[: rows * in_dim].copy_(default_weight.reshape(-1))
+
+    @staticmethod
+    def _init_rf_per_chunk(
+        embedding, generator, trunk_dim, generator_hidden, rows, in_dim, n_chunks, gain
+    ):
+        """Give every chunk its own slice of one target-layer init, via the code path.
+
+        ``_init_rf_generator`` has to put the init in the generator bias, which
+        every chunk shares, so the generated matrix starts as one block tiled
+        ``n_chunks`` times and only the random code path breaks the tie. Here the
+        layer gets a single orthogonal ``(n_chunks * rows, in_dim)`` draw -- what
+        a flat head would use for the same target layer -- and chunk ``j`` is
+        handed row-block ``j`` through the parameters that already exist for the
+        chunk code, so the fix costs nothing.
+
+        The codes are set to an orthonormal basis ``C`` (rows ``c_j``) and the
+        code columns of the output head to ``B C``, where column ``j`` of ``B``
+        is block ``j``. Orthonormal rows give ``C c_j = e_j``, hence
+        ``(B C) c_j = B e_j = block_j`` exactly. That needs ``n_chunks`` codes to
+        be linearly independent, i.e. ``chunk_embed_dim >= n_chunks``: the same
+        bound docs/CHUNK_SIZE_AND_EMBED_DIM.md calls the saturation point of the
+        embedding, spent here instead of left idle.
+
+        With a hidden generator the code never reaches the output head directly,
+        so the first ``n_chunks`` hidden units are reserved as chunk gates: unit
+        ``j`` reads ``c_j`` and nothing else, so it fires at exactly 1 on chunk
+        ``j`` and 0 elsewhere, and the output head maps it to block ``j``. The
+        remaining units keep their normal init and carry the agent-dependent
+        part.
+        """
+        embed_dim = int(embedding.shape[1])
+        if embed_dim < n_chunks:
+            raise ValueError(
+                f'hyper_chunk_rf_mode=per_chunk needs chunk_embed_dim >= n_chunks, '
+                f'got chunk_embed_dim={embed_dim} for a layer split into '
+                f'{n_chunks} chunks. Raise hyper_chunk_embed_dim to at least '
+                f'{n_chunks}, or use a larger chunk size.'
+            )
+        if generator_hidden and generator_hidden < n_chunks:
+            raise ValueError(
+                f'hyper_chunk_rf_mode=per_chunk reserves one hidden unit per chunk, '
+                f'so it needs hyper_chunk_generator_hidden >= n_chunks, got '
+                f'{generator_hidden} for a layer split into {n_chunks} chunks.'
+            )
+
+        output_layer = LayerwiseHyperNetwork._last_linear(generator)
+        weight_numel = int(rows) * int(in_dim)
+        deviation_gain = float(gain) / math.sqrt(max(1.0, float(in_dim)))
+
+        with torch.no_grad():
+            codes = embedding.new_empty(n_chunks, embed_dim)
+            nn.init.orthogonal_(codes)
+            embedding.copy_(codes)
+
+            layer_init = output_layer.weight.new_empty(n_chunks * int(rows), int(in_dim))
+            nn.init.orthogonal_(layer_init, gain=float(gain))
+            # column j is block j, flattened the way forward() reads it back
+            blocks = layer_init.reshape(n_chunks, weight_numel).t()
+
+            if output_layer.bias is not None:
+                output_layer.bias.zero_()
+
+            if generator_hidden:
+                hidden_layer = generator[0]
+                hidden_layer.weight[:n_chunks, :trunk_dim].zero_()
+                hidden_layer.weight[:n_chunks, trunk_dim:].copy_(codes)
+                if hidden_layer.bias is not None:
+                    hidden_layer.bias[:n_chunks].zero_()
+
+                output_layer.weight[:, :n_chunks].zero_()
+                output_layer.weight[:weight_numel, :n_chunks].copy_(blocks)
+                free = output_layer.weight.shape[1] - n_chunks
+                deviation = output_layer.weight.new_empty(output_layer.weight.shape[0], free)
+                nn.init.orthogonal_(deviation, gain=deviation_gain)
+                output_layer.weight[:, n_chunks:].copy_(deviation)
+                return
+
+            deviation = output_layer.weight.new_empty(output_layer.weight.shape[0], trunk_dim)
+            nn.init.orthogonal_(deviation, gain=deviation_gain)
+            output_layer.weight[:, :trunk_dim].copy_(deviation)
+
+            code_weight = output_layer.weight.new_zeros(
+                output_layer.weight.shape[0], embed_dim
+            )
+            code_weight[:weight_numel].copy_(blocks @ codes)
+            output_layer.weight[:, trunk_dim:].copy_(code_weight)
 
     def forward(self, x):
         hidden = self.trunk(x)
@@ -585,9 +719,13 @@ def build_hypernetwork(
     chunk_size=8,
     chunk_embed_dim=16,
     chunk_generator_hidden=0,
+    chunk_rf_mode='shared',
 ):
     """
     Build a linear or MLP hypernetwork from config.
+
+    ``chunk_*`` arguments only reach the chunked head; the other head modes
+    ignore them the way they always have.
     """
 
     kind = str(hypernet_type or 'mlp').lower()
@@ -609,6 +747,7 @@ def build_hypernetwork(
             rf_mode=rf_mode,
             rf_hidden_gain=rf_hidden_gain,
             rf_output_gain=rf_output_gain,
+            chunk_rf_mode=chunk_rf_mode,
         )
     if mode in ('layerwise', 'headed', 'official'):
         return LayerwiseHyperNetwork(
