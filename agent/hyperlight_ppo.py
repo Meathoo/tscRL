@@ -424,6 +424,12 @@ class HyperLightPPOAgent(RLAgent):
         self.topology_encoder = None
         self.structural_spec = None
         self.structural_raw_features = None
+        # None keeps the full 12-feature contract; a comma-separated subset runs
+        # the same features with columns dropped (transfer/structural.py).
+        raw_feature_sel = cfg.get('structural_features', None)
+        self.structural_features = (
+            str(raw_feature_sel) if raw_feature_sel not in (None, '', 'all') else None
+        )
         if self.topology_aware_embedding:
             if self.embedding_mode == 'structural':
                 (
@@ -433,8 +439,9 @@ class HyperLightPPOAgent(RLAgent):
                 ) = build_structural_features(
                     self.world.intersections,
                     lanes_for_road=self._lanes_for_road,
+                    features=self.structural_features,
                 )
-                self.structural_spec = structural_spec_id()
+                self.structural_spec = structural_spec_id(self.structural_features)
             else:
                 topology_features, self.topology_feature_names = self._build_topology_features()
             self.registered_topology_features = torch.tensor(
@@ -807,7 +814,8 @@ class HyperLightPPOAgent(RLAgent):
         lines = []
         if self.embedding_mode == 'structural':
             lines.append(f'structural conditioning spec: {self.structural_spec}')
-            lines.append(summarize_raw_features(self.structural_raw_features))
+            lines.append(summarize_raw_features(
+                self.structural_raw_features, self.topology_feature_names))
         if self._obs_capacity_note:
             lines.append(
                 f'observation normalisation: capacity '

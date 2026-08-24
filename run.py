@@ -54,6 +54,16 @@ parser.add_argument(
          'per-intersection index table so the meta vector transfers across '
          'road networks (see transfer/TRANSFER.md)',
 )
+parser.add_argument(
+    '--structural_features',
+    type=str,
+    default=None,
+    help='override model.structural_features (agent_embedding_mode=structural '
+         'only): comma-separated subset of the structural contract, e.g. '
+         '"in_lane_count,out_lane_count,in_degree,out_degree". Omit for the '
+         'full 12-feature contract. The subset changes spec_id(), so a subset '
+         'run cannot silently load a full-contract checkpoint.',
+)
 parser.add_argument('--hypernet_type', type=str, default=None, choices=['mlp', 'linear'],
                     help='override model hypernetwork type')
 parser.add_argument('--hyper_actor_arch', type=str, default=None, choices=['mlp', 'iru'],

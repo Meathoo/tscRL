@@ -55,10 +55,47 @@ FEATURE_NAMES = tuple(name for name, _ in _FEATURE_SPEC)
 FEATURE_DIM = len(_FEATURE_SPEC)
 _SCALES = np.asarray([scale for _, scale in _FEATURE_SPEC], dtype=np.float32)
 
+_FEATURE_INDEX = {name: idx for idx, name in enumerate(FEATURE_NAMES)}
 
-def spec_id():
-    """Stable identifier for the feature contract, stored in checkpoints."""
-    return f"structural_v{SPEC_VERSION}:" + ','.join(FEATURE_NAMES)
+
+def resolve_features(features=None):
+    """Normalise a feature selection into ``(names, indices)``.
+
+    ``features`` is ``None`` (the full contract), a comma-separated string, or a
+    sequence of names.  The result is always in the canonical ``_FEATURE_SPEC``
+    order regardless of the order the caller wrote them in, so the same subset
+    can only ever produce one ``spec_id``.
+    """
+    if features is None:
+        return FEATURE_NAMES, np.arange(FEATURE_DIM)
+    if isinstance(features, str):
+        wanted = [part.strip() for part in features.split(',') if part.strip()]
+    else:
+        wanted = [str(part).strip() for part in features if str(part).strip()]
+    if not wanted:
+        raise ValueError('structural feature selection is empty')
+    unknown = [name for name in wanted if name not in _FEATURE_INDEX]
+    if unknown:
+        raise ValueError(
+            'unknown structural feature(s): ' + ', '.join(unknown)
+            + '; valid names are ' + ', '.join(FEATURE_NAMES)
+        )
+    seen = set()
+    duplicates = [n for n in wanted if n in seen or seen.add(n)]
+    if duplicates:
+        raise ValueError('duplicate structural feature(s): ' + ', '.join(sorted(set(duplicates))))
+    indices = np.asarray(sorted(_FEATURE_INDEX[name] for name in wanted))
+    return tuple(FEATURE_NAMES[i] for i in indices), indices
+
+
+def spec_id(features=None):
+    """Stable identifier for the feature contract, stored in checkpoints.
+
+    A subset produces a different id from the full contract, which is what stops
+    a 4-feature run from loading a 12-feature checkpoint (and vice versa).
+    """
+    names, _ = resolve_features(features)
+    return f"structural_v{SPEC_VERSION}:" + ','.join(names)
 
 
 def _road_key(road):
@@ -107,7 +144,7 @@ def _neighbour_sets(intersections):
     return neighbours
 
 
-def build_structural_features(intersections, *, lanes_for_road):
+def build_structural_features(intersections, *, lanes_for_road, features=None):
     """Build ``[n_intersections, FEATURE_DIM]`` network-independent features.
 
     ``lanes_for_road(inter, road)`` is passed in as a callable -- the agent's
@@ -155,16 +192,23 @@ def build_structural_features(intersections, *, lanes_for_road):
         )
 
     raw = np.asarray(rows, dtype=np.float32).reshape(len(rows), FEATURE_DIM)
-    return (raw / _SCALES).astype(np.float32), list(FEATURE_NAMES), raw
+    scaled = (raw / _SCALES).astype(np.float32)
+    names, indices = resolve_features(features)
+    if len(indices) != FEATURE_DIM:
+        scaled = scaled[:, indices]
+        raw = raw[:, indices]
+    return scaled, list(names), raw
 
 
-def summarize_raw_features(raw):
+def summarize_raw_features(raw, names=None):
     """One-line-per-feature min/mean/max summary for the run log."""
     if raw is None or len(raw) == 0:
         return 'structural features: <empty>'
     array = np.asarray(raw, dtype=np.float32)
+    if names is None:
+        names = FEATURE_NAMES if array.shape[1] == FEATURE_DIM else             tuple(f'f{i}' for i in range(array.shape[1]))
     parts = []
-    for idx, name in enumerate(FEATURE_NAMES):
+    for idx, name in enumerate(names):
         column = array[:, idx]
         parts.append(f'{name}[{column.min():g}/{column.mean():.2f}/{column.max():g}]')
     return 'structural features (min/mean/max): ' + ' '.join(parts)

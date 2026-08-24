@@ -15,6 +15,7 @@ from .structural import (
     FEATURE_DIM,
     SPEC_VERSION,
     build_structural_features,
+    resolve_features,
     spec_id,
     summarize_raw_features,
 )
@@ -31,6 +32,7 @@ __all__ = [
     'FEATURE_DIM',
     'SPEC_VERSION',
     'build_structural_features',
+    'resolve_features',
     'spec_id',
     'summarize_raw_features',
     'TransferError',

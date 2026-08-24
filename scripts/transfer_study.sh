@@ -26,6 +26,7 @@
 #   scripts/transfer_study.sh finetune            # needs stage1 checkpoints
 #   scripts/transfer_study.sh compress            # chunked vs flat, same network
 #   scripts/transfer_study.sh dynamic             # traffic-state conditioning
+#   scripts/transfer_study.sh features            # structural feature subset
 #
 # Extra seeds for an existing stage are just a SEEDS override, e.g.
 #   WORLD=sumo NETWORK=sumo1x21 SEEDS="3 4" scripts/transfer_study.sh stage1
@@ -137,6 +138,30 @@ case "$STAGE" in
             "structlrent|--agent_embedding_mode structural --lr_anneal linear --entropy_anneal linear"
         )
         ;;
+    features)
+        # Structural-conditioning feature ablation: the same arm as stage1's
+        # `struct`, except the meta vector is built from a named subset of the
+        # contract instead of all 12 features.  The control is stage1's own
+        # `struct`, so only the subset arm is new here.
+        #
+        # node_degree is deliberately absent from the default subset: it is
+        # defined as in_degree + out_degree (transfer/structural.py), so after
+        # scaling it is exactly (in_degree + out_degree)/2 -- a linear
+        # combination of two features already in the set, which the encoder's
+        # first Linear absorbs.  Including it would advertise 5 features while
+        # supplying 4 independent signals.
+        #
+        # The subset changes spec_id(), so these checkpoints cannot be loaded
+        # by a full-contract run and vice versa -- which is the point.
+        NETWORK="${NETWORK:-sumo1x21}"
+        SEEDS="${SEEDS:-0 1 2}"
+        EPISODES="${EPISODES:-250}"
+        FEATURES="${FEATURES:-in_lane_count,out_lane_count,in_degree,out_degree}"
+        FEATURE_TAG="${FEATURE_TAG:-struct4}"
+        CONFIGS=(
+            "${FEATURE_TAG}|--agent_embedding_mode structural --structural_features ${FEATURES}"
+        )
+        ;;
     baseline)
         # One non-HyperLight method per invocation, driven by AGENT. Output
         # already lands under <world>_<agent>/, so the tag can be the agent name
@@ -150,10 +175,15 @@ case "$STAGE" in
         # ppo.yml sets early_stop_patience=8, so the PPO family stops around
         # episode 65 while dqn and colight run the full budget -- pass
         # EXTRA="--early_stop_patience 0" to put them on equal footing.
+        # TAG overrides the prefix when the plain agent name would collide with
+        # an existing finished run on this machine -- resilient_run_world.sh
+        # judges "already done" by checkpoint episode, so a re-run under the old
+        # name silently returns instead of re-running.  Re-running a baseline
+        # after a code fix therefore needs a new TAG, e.g. TAG=colightfix.
         NETWORK="${NETWORK:-cityflow4x4}"
         SEEDS="${SEEDS:-0 1 2}"
         EPISODES="${EPISODES:-250}"
-        CONFIGS=("${AGENT}|${EXTRA:-}")
+        CONFIGS=("${TAG:-$AGENT}|${EXTRA:-}")
         ;;
     zeroshot|finetune)
         NETWORK="${NETWORK:-cityflow4x4}"   # the SOURCE network of the checkpoints
@@ -239,7 +269,7 @@ fi
 
 JOBS=()
 case "$STAGE" in
-    stage1|list|smoke|compress|dynamic|obsnorm|baseline|anneal)
+    stage1|list|smoke|compress|dynamic|obsnorm|baseline|anneal|features)
         # smoke gets its own prefix so a 1-episode validation run can never be
         # mistaken for -- or resumed as -- a real stage1 run.
         name_prefix=''

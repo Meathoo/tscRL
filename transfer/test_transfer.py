@@ -19,6 +19,7 @@ from transfer import (
     SPEC_VERSION,
     TransferError,
     build_structural_features,
+    resolve_features,
     format_report,
     load_for_transfer,
     spec_id,
@@ -311,6 +312,57 @@ class TransferLoadTests(unittest.TestCase):
         target = _FakeAgent(_signature(), nn.Linear(64, 32))
         with self.assertRaises(TransferError):
             load_for_transfer(target, os.path.join(self.tmpdir.name, 'nope.pt'))
+
+
+class StructuralFeatureSubsetTests(unittest.TestCase):
+    """A subset must drop columns without disturbing the ones it keeps."""
+
+    SUBSET = 'in_lane_count,out_lane_count,in_degree,out_degree'
+
+    def test_default_spec_is_unchanged(self):
+        # Existing checkpoints carry this exact string; changing it would make
+        # every stored architecture signature unloadable.
+        self.assertEqual(spec_id(), spec_id(None))
+        self.assertTrue(spec_id().endswith(',controlled_neighbor_ratio'))
+        self.assertEqual(spec_id().count(','), FEATURE_DIM - 1)
+
+    def test_subset_spec_differs_from_full(self):
+        self.assertNotEqual(spec_id(self.SUBSET), spec_id())
+        self.assertEqual(
+            spec_id(self.SUBSET),
+            'structural_v1:in_lane_count,out_lane_count,in_degree,out_degree',
+        )
+
+    def test_selection_is_canonically_ordered(self):
+        shuffled = 'out_degree,in_lane_count,out_lane_count,in_degree'
+        self.assertEqual(spec_id(shuffled), spec_id(self.SUBSET))
+        names, indices = resolve_features(shuffled)
+        self.assertEqual(list(names), self.SUBSET.split(','))
+        self.assertEqual(list(indices), [0, 1, 2, 3])
+
+    def test_subset_columns_match_the_full_build(self):
+        intersections = _network(3)
+        full_scaled, full_names, full_raw = _features(intersections)
+        sub_scaled, sub_names, sub_raw = build_structural_features(
+            intersections,
+            lanes_for_road=lambda inter, road: list(road.get('lanes', [])),
+            features=self.SUBSET,
+        )
+        self.assertEqual(sub_names, self.SUBSET.split(','))
+        self.assertEqual(sub_scaled.shape, (len(intersections), 4))
+        for name in sub_names:
+            col = full_names.index(name)
+            np.testing.assert_array_equal(
+                sub_scaled[:, sub_names.index(name)], full_scaled[:, col]
+            )
+            np.testing.assert_array_equal(
+                sub_raw[:, sub_names.index(name)], full_raw[:, col]
+            )
+
+    def test_unknown_duplicate_and_empty_are_rejected(self):
+        for bad in ('nope', 'in_degree,in_degree', '', '  ,  '):
+            with self.assertRaises(ValueError):
+                resolve_features(bad)
 
 
 if __name__ == '__main__':
