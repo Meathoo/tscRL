@@ -191,9 +191,28 @@ case "$STAGE" in
         EPISODES="${EPISODES:-250}"
         FEATURES="${FEATURES:-in_lane_count,out_lane_count,in_degree,out_degree}"
         FEATURE_TAG="${FEATURE_TAG:-struct4}"
-        CONFIGS=(
-            "${FEATURE_TAG}|--agent_embedding_mode structural --structural_features ${FEATURES}"
-        )
+        # FEATURE_SETS runs several subsets in one dispatch:
+        #   FEATURE_SETS="qr2=in_degree,lanes_per_in_road;qr4=in_degree,..."
+        # Semicolons separate arms, '=' separates the tag from its feature list.
+        # Without it the single FEATURES/FEATURE_TAG pair is used.
+        if [ -n "${FEATURE_SETS:-}" ]; then
+            CONFIGS=()
+            _saved_ifs="$IFS"; IFS=';'
+            for _entry in $FEATURE_SETS; do
+                [ -z "$_entry" ] && continue
+                _tag="${_entry%%=*}"; _feats="${_entry#*=}"
+                CONFIGS+=("${_tag}|--agent_embedding_mode structural --structural_features ${_feats}")
+            done
+            IFS="$_saved_ifs"
+            if [ "${#CONFIGS[@]}" -eq 0 ]; then
+                echo "FEATURE_SETS parsed to no arms: $FEATURE_SETS" >&2
+                exit 2
+            fi
+        else
+            CONFIGS=(
+                "${FEATURE_TAG}|--agent_embedding_mode structural --structural_features ${FEATURES}"
+            )
+        fi
         ;;
     baseline)
         # One non-HyperLight method per invocation, driven by AGENT. Output
