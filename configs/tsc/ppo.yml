@@ -56,6 +56,21 @@ trainer:
   update_target_rate: 1
   test_when_train: True
   test_interval: 5
+  # Counted in TEST evaluations, not episodes: test_interval is 5, so 8 means
+  # training stops after 40 episodes without a new best.  That is a reasonable
+  # rule where the TEST curve is smooth, and a trap where it is not.
+  #
+  # On Ingolstadt21 (sumo1x21) the TEST curve oscillates with a within-run
+  # standard deviation of 30-45 travel-time units all the way through training,
+  # so eight consecutive evaluations below the running best says nothing about
+  # convergence.  mappo stopped there at episode 60-65 while dqn and colight ran
+  # the full 250, which made the baseline table compare unequal budgets; re-run
+  # at the full budget its best arrived at episode 195, long past the stop, and
+  # travel time improved 249.15 -> 233.86 with queue and throughput following.
+  #
+  # Pass --early_stop_patience 0 to disable it whenever the evaluation is noisy
+  # or whenever this family has to be compared against agents that run a fixed
+  # budget.  Left at 8 so existing results stay reproducible.
   early_stop_patience: 8
   load_best_for_test: True
 

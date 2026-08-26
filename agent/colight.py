@@ -37,7 +37,17 @@ class CoLightAgent(RLAgent):
         self.world = world
         self.sub_agents = len(self.world.intersections)
         # TODO: support dynamic graph later
-        self.edge_idx = torch.tensor(self.graph['sparse_adj'].T, dtype=torch.long)  # source -> target
+        # sparse_adj is indexed by graph node index, which is the order the
+        # intersections appear in the converted roadnet JSON.  Everything else
+        # this agent holds -- observations, rewards, phase_lengths, the action
+        # vector the trainer applies -- is indexed by world.intersections.  On
+        # the CityFlow grids the two orders coincide and the distinction never
+        # surfaces; on Ingolstadt21 all 21 rows are out of place, so without
+        # this remap every node aggregates the neighbours of an unrelated
+        # intersection.  world order is authoritative, so the adjacency moves to
+        # match it; where the orders already agree the remap is the identity.
+        self.edge_idx = torch.tensor(
+            self._world_ordered_adjacency().T, dtype=torch.long)  # source -> target
 
         #  model parameters
         self.phase = Registry.mapping['model_mapping']['setting'].param['phase']
@@ -51,7 +61,8 @@ class CoLightAgent(RLAgent):
             node_idx = self.graph['node_id2idx'][node_id]
             tmp_generator = LaneVehicleGenerator(self.world, inter, ['lane_count'], in_only=True, average=None)
             observation_generators.append((node_idx, tmp_generator))
-        sorted(observation_generators, key=lambda x: x[0])  # now generator's order is according to its index in graph
+        # Deliberately left in world.intersections order; the adjacency is
+        # brought to this order by _world_ordered_adjacency instead.
         self.ob_generator = observation_generators
 
         #  get reward generator for CoLightAgent
@@ -62,7 +73,6 @@ class CoLightAgent(RLAgent):
             tmp_generator = LaneVehicleGenerator(self.world, inter, ["lane_waiting_count"],
                                                  in_only=True, average='all', negative=True)
             rewarding_generators.append((node_idx, tmp_generator))
-        sorted(rewarding_generators, key=lambda x: x[0])  # now generator's order is according to its index in graph
         self.reward_generator = rewarding_generators
 
         #  get queue generator for CoLightAgent
@@ -74,7 +84,6 @@ class CoLightAgent(RLAgent):
                                                  in_only=True, negative=False)
             queues.append((node_idx, tmp_generator))
         # now generator's order is according to its index in graph
-        sorted(queues, key=lambda x: x[0])
         self.queue = queues
 
         #  get delay generator for CoLightAgent
@@ -86,7 +95,6 @@ class CoLightAgent(RLAgent):
                                                  in_only=True, average="all", negative=False)
             delays.append((node_idx, tmp_generator))
         # now generator's order is according to its index in graph
-        sorted(delays, key=lambda x: x[0])
         self.delay = delays
 
         #  phase generator
@@ -97,7 +105,6 @@ class CoLightAgent(RLAgent):
             tmp_generator = IntersectionPhaseGenerator(self.world, inter, ['phase'],
                                                        targets=['cur_phase'], negative=False)
             phasing_generators.append((node_idx, tmp_generator))
-        sorted(phasing_generators, key=lambda x: x[0])  # now generator's order is according to its index in graph
         self.phase_generator = phasing_generators
 
         # TODO: add irregular control of signals in the future
@@ -133,6 +140,20 @@ class CoLightAgent(RLAgent):
                                        lr=self.learning_rate,
                                        alpha=0.9, centered=False, eps=1e-7)
 
+    def _world_ordered_adjacency(self):
+        """``graph['sparse_adj']`` reindexed from graph order to world order."""
+        idx2id = self.graph['node_idx2id']
+        world_pos = {}
+        for pos, inter in enumerate(self.world.intersections):
+            node_id = inter.id[3:] if inter.id.startswith('GS_') else inter.id
+            world_pos[node_id] = pos
+        missing = [idx2id[g] for g in range(len(idx2id)) if idx2id[g] not in world_pos]
+        if missing:
+            raise ValueError(
+                'graph nodes absent from world.intersections: ' + ', '.join(map(str, missing)))
+        remap = np.array([world_pos[idx2id[g]] for g in range(len(idx2id))], dtype=np.int64)
+        return remap[np.asarray(self.graph['sparse_adj'], dtype=np.int64)]
+
     def reset(self):
         observation_generators = []
         for inter in self.world.intersections:
@@ -140,7 +161,6 @@ class CoLightAgent(RLAgent):
             node_idx = self.graph['node_id2idx'][node_id]
             tmp_generator = LaneVehicleGenerator(self.world, inter, ['lane_count'], in_only=True, average=None)
             observation_generators.append((node_idx, tmp_generator))
-        sorted(observation_generators, key=lambda x: x[0])  # now generator's order is according to its index in graph
         self.ob_generator = observation_generators
 
         #  get reward generator for CoLightAgent
@@ -151,7 +171,6 @@ class CoLightAgent(RLAgent):
             tmp_generator = LaneVehicleGenerator(self.world, inter, ["lane_waiting_count"],
                                                  in_only=True, average='all', negative=True)
             rewarding_generators.append((node_idx, tmp_generator))
-        sorted(rewarding_generators, key=lambda x: x[0])  # now generator's order is according to its index in graph
         self.reward_generator = rewarding_generators
 
         #  phase generator
@@ -162,7 +181,6 @@ class CoLightAgent(RLAgent):
             tmp_generator = IntersectionPhaseGenerator(self.world, inter, ['phase'],
                                                        targets=['cur_phase'], negative=False)
             phasing_generators.append((node_idx, tmp_generator))
-        sorted(phasing_generators, key=lambda x: x[0])  # now generator's order is according to its index in graph
         self.phase_generator = phasing_generators
 
         # queue metric
@@ -174,7 +192,6 @@ class CoLightAgent(RLAgent):
                                                  in_only=True, negative=False)
             queues.append((node_idx, tmp_generator))
         # now generator's order is according to its index in graph
-        sorted(queues, key=lambda x: x[0])
         self.queue = queues
 
         # delay metric
@@ -186,7 +203,6 @@ class CoLightAgent(RLAgent):
                                                  in_only=True, average="all", negative=False)
             delays.append((node_idx, tmp_generator))
         # now generator's order is according to its index in graph
-        sorted(delays, key=lambda x: x[0])
         self.delay = delays
 
     def get_ob(self):
