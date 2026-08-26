@@ -70,6 +70,26 @@ CONFIGS=(
     "learned|--agent_embedding_mode learned"
 )
 
+# FEATURE_SETS="tag=a,b;tag2=a,b,c" replaces CONFIGS with one structural arm
+# per entry.  Used by `features`, and by zeroshot/finetune so a transferred run
+# rebuilds the same subset its source checkpoint was trained on -- spec_id()
+# encodes the subset, so a mismatch is refused rather than silently loaded.
+apply_feature_sets() {
+    CONFIGS=()
+    local saved_ifs="$IFS" entry tag feats
+    IFS=';'
+    for entry in $FEATURE_SETS; do
+        [ -z "$entry" ] && continue
+        tag="${entry%%=*}"; feats="${entry#*=}"
+        CONFIGS+=("${tag}|--agent_embedding_mode structural --structural_features ${feats}")
+    done
+    IFS="$saved_ifs"
+    if [ "${#CONFIGS[@]}" -eq 0 ]; then
+        echo "FEATURE_SETS parsed to no arms: $FEATURE_SETS" >&2
+        exit 2
+    fi
+}
+
 case "$STAGE" in
     stage1|list)
         NETWORK="${NETWORK:-cityflow4x4}"
@@ -196,18 +216,7 @@ case "$STAGE" in
         # Semicolons separate arms, '=' separates the tag from its feature list.
         # Without it the single FEATURES/FEATURE_TAG pair is used.
         if [ -n "${FEATURE_SETS:-}" ]; then
-            CONFIGS=()
-            _saved_ifs="$IFS"; IFS=';'
-            for _entry in $FEATURE_SETS; do
-                [ -z "$_entry" ] && continue
-                _tag="${_entry%%=*}"; _feats="${_entry#*=}"
-                CONFIGS+=("${_tag}|--agent_embedding_mode structural --structural_features ${_feats}")
-            done
-            IFS="$_saved_ifs"
-            if [ "${#CONFIGS[@]}" -eq 0 ]; then
-                echo "FEATURE_SETS parsed to no arms: $FEATURE_SETS" >&2
-                exit 2
-            fi
+            apply_feature_sets
         else
             CONFIGS=(
                 "${FEATURE_TAG}|--agent_embedding_mode structural --structural_features ${FEATURES}"
@@ -238,6 +247,10 @@ case "$STAGE" in
         CONFIGS=("${TAG:-$AGENT}|${EXTRA:-}")
         ;;
     zeroshot|finetune)
+        # A feature-subset arm has to carry its subset into the target run as
+        # well: source_checkpoint() finds it by tag, but the agent rebuilds its
+        # meta vector from --structural_features, and spec_id() has to match.
+        [ -n "${FEATURE_SETS:-}" ] && apply_feature_sets
         NETWORK="${NETWORK:-cityflow4x4}"   # the SOURCE network of the checkpoints
         SEEDS="${SEEDS:-0 1 2}"
         TARGETS="${TARGETS:-cityflow16x3}"
