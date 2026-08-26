@@ -37,6 +37,10 @@ class CoLightAgent(RLAgent):
         self.world = world
         self.sub_agents = len(self.world.intersections)
         # TODO: support dynamic graph later
+        self.colight_adjacency = str(Registry.mapping['model_mapping']['setting'].param.get(
+            'colight_adjacency', 'road')).lower()
+        if self.colight_adjacency not in ('road', 'contracted'):
+            raise ValueError(f'Unknown colight_adjacency: {self.colight_adjacency}')
         # sparse_adj is indexed by graph node index, which is the order the
         # intersections appear in the converted roadnet JSON.  Everything else
         # this agent holds -- observations, rewards, phase_lengths, the action
@@ -141,7 +145,27 @@ class CoLightAgent(RLAgent):
                                        alpha=0.9, centered=False, eps=1e-7)
 
     def _world_ordered_adjacency(self):
-        """``graph['sparse_adj']`` reindexed from graph order to world order."""
+        """The chosen adjacency, reindexed from graph order to world order.
+
+        ``colight_adjacency`` picks which one:
+
+        road        an edge where a single road joins two signals.  The default,
+                    and what every result before this option was produced with.
+        contracted  an edge where a path joins two signals through junctions
+                    that carry no signal.  On the CityFlow grids this is exactly
+                    the same set of edges, because there the signals really are
+                    joined by single roads.  On Ingolstadt21 it is the
+                    difference between 2 edges and 143: under `road`, 19 of 21
+                    nodes have degree zero and attend only to themselves, so
+                    CoLight is 21 independent agents wearing a graph.
+        """
+        mode = getattr(self, 'colight_adjacency', 'road')
+        key = 'sparse_adj' if mode == 'road' else 'sparse_adj_reachable'
+        if key not in self.graph:
+            raise ValueError(
+                f'graph has no {key!r}; colight_adjacency={mode} is unavailable '
+                'for this world')
+        adjacency = np.asarray(self.graph[key], dtype=np.int64).reshape(-1, 2)
         idx2id = self.graph['node_idx2id']
         world_pos = {}
         for pos, inter in enumerate(self.world.intersections):
@@ -152,7 +176,7 @@ class CoLightAgent(RLAgent):
             raise ValueError(
                 'graph nodes absent from world.intersections: ' + ', '.join(map(str, missing)))
         remap = np.array([world_pos[idx2id[g]] for g in range(len(idx2id))], dtype=np.int64)
-        return remap[np.asarray(self.graph['sparse_adj'], dtype=np.int64)]
+        return remap[adjacency]
 
     def reset(self):
         observation_generators = []

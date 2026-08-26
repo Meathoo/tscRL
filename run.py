@@ -64,6 +64,12 @@ parser.add_argument(
          'full 12-feature contract. The subset changes spec_id(), so a subset '
          'run cannot silently load a full-contract checkpoint.',
 )
+parser.add_argument('--colight_adjacency', type=str, default=None,
+                    choices=['road', 'contracted'],
+                    help='override model.colight_adjacency: how two signals count as '
+                         'neighbours. road = one road joins them (default, and what '
+                         'existing results used); contracted = a path joins them through '
+                         'junctions carrying no signal. Identical on the CityFlow grids.')
 parser.add_argument('--hypernet_type', type=str, default=None, choices=['mlp', 'linear'],
                     help='override model hypernetwork type')
 parser.add_argument('--hyper_actor_arch', type=str, default=None, choices=['mlp', 'iru'],

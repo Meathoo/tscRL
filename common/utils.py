@@ -109,11 +109,62 @@ def build_index_intersection_map_cityflow(roadnet_file):
     node_degrees = np.array(node_degrees)  # the num of adjacent nodes of node
     sparse_adj = np.array(sparse_adj)  # the valid num of adjacent edges of node
 
+    successors = {}
+    signal_nodes = set(node_id2idx.keys())
+    for edge_dict in roadnet_dict["roads"]:
+        successors.setdefault(edge_dict['startIntersection'], []).append(
+            edge_dict['endIntersection'])
+    sparse_adj_reachable = np.array(
+        contract_uncontrolled(successors, signal_nodes, node_id2idx),
+        dtype=np.int64).reshape(-1, 2)
+
     result = {'node_idx2id': node_idx2id, 'node_id2idx': node_id2idx,
               'edge_idx2id': edge_idx2id, 'edge_id2idx': edge_id2idx,
               'node_degrees': node_degrees, 'sparse_adj': sparse_adj,
+              'sparse_adj_reachable': sparse_adj_reachable,
               'node_list': node_list, 'edge_list': edge_list}
     return result
+
+def contract_uncontrolled(successors, signal_nodes, node_id2idx, strip=lambda x: x):
+    """Signal-to-signal adjacency with unsignalised junctions contracted away.
+
+    ``successors`` maps a raw junction id to the raw junction ids one road-hop
+    downstream.  Two signals are adjacent when a directed path runs from one to
+    the other through junctions that carry no signal -- which is how signals are
+    actually linked in a real road network, and never how they are linked in a
+    synthetic grid.
+
+    The default adjacency (an edge only when a single road joins two signals)
+    leaves Ingolstadt21 with 2 edges across 21 nodes and 19 nodes of degree
+    zero, which makes any graph-attention agent on it a set of independent
+    agents.  On the CityFlow grids the two definitions agree, because there the
+    signals really are joined by single roads.
+
+    Returns a list of ``[src_idx, dst_idx]`` in ``node_id2idx`` indexing.
+    """
+    adj = []
+    seen_pairs = set()
+    for raw_src in successors:
+        src_key = strip(raw_src)
+        if src_key not in node_id2idx:
+            continue
+        frontier = list(successors.get(raw_src, ()))
+        visited = {raw_src}
+        while frontier:
+            raw = frontier.pop()
+            if raw in visited:
+                continue
+            visited.add(raw)
+            key = strip(raw)
+            if raw in signal_nodes and key in node_id2idx:
+                # reached the next signal: record it and stop expanding here,
+                # so paths are contracted rather than chained through signals
+                if key != src_key and (src_key, key) not in seen_pairs:
+                    seen_pairs.add((src_key, key))
+                    adj.append([node_id2idx[src_key], node_id2idx[key]])
+                continue
+            frontier.extend(successors.get(raw, ()))
+    return adj
 
 def build_index_intersection_map_sumo(roadnet_file):
 
@@ -184,12 +235,28 @@ def build_index_intersection_map_sumo(roadnet_file):
         edge_list.append(sorted(input_edges))
         node_list.append(sorted(input_nodes))
 
+    # Alternative adjacency, offered alongside the default and never replacing
+    # it: see contract_uncontrolled.  Consumers opt in; nothing reads this key
+    # unless asked to, so every existing result stands.
+    successors = {}
+    signal_nodes = set()
+    for edge in net.getEdges():
+        successors.setdefault(edge.getFromNode().getID(), []).append(edge.getToNode().getID())
+    for node in net.getNodes():
+        if get_node_id(node) in node_id2idx:
+            signal_nodes.add(node.getID())
+    sparse_adj_reachable = np.array(
+        contract_uncontrolled(successors, signal_nodes, node_id2idx,
+                              strip=lambda i: i if 'GS_' not in i else i[3:]),
+        dtype=np.int64).reshape(-1, 2)
+
     node_degrees = np.array(node_degrees)  # the num of adjacent nodes of node
     sparse_adj = np.array(sparse_adj)  # the valid num of adjacent edges of node
 
     result = {'node_idx2id': node_idx2id, 'node_id2idx': node_id2idx,
             'edge_idx2id': edge_idx2id, 'edge_id2idx': edge_id2idx,
             'node_degrees': node_degrees, 'sparse_adj': sparse_adj,
+            'sparse_adj_reachable': sparse_adj_reachable,
             'node_list': node_list, 'edge_list': edge_list}
     return result
 

@@ -6,6 +6,10 @@ model:
   name: colight
   train_model: True
   graphic: True
+  # road | contracted -- see CoLightAgent._world_ordered_adjacency.
+  # `road` is what every existing result used; `contracted` only differs on
+  # networks where signals are linked through unsignalised junctions.
+  colight_adjacency: road
   vehicle_max: 1
   epsilon: 0.8
   epsilon_decay: 0.9995

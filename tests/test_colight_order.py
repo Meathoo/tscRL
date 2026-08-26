@@ -26,12 +26,15 @@ class _Agent:
     from agent.colight import CoLightAgent
     _world_ordered_adjacency = CoLightAgent._world_ordered_adjacency
 
-    def __init__(self, world_ids, graph_order, edges):
+    def __init__(self, world_ids, graph_order, edges, mode='road', reachable=None):
+        self.colight_adjacency = mode
         self.world = type('W', (), {'intersections': [_Inter(i) for i in world_ids]})()
         self.graph = {
             'node_idx2id': {i: n for i, n in enumerate(graph_order)},
             'sparse_adj': np.array(edges, dtype=np.int64),
         }
+        if reachable is not None:
+            self.graph['sparse_adj_reachable'] = np.array(reachable, dtype=np.int64)
 
 
 class AdjacencyOrderTests(unittest.TestCase):
@@ -65,6 +68,28 @@ class AdjacencyOrderTests(unittest.TestCase):
 
     def test_missing_node_is_refused_not_silently_dropped(self):
         agent = _Agent(['a', 'b'], ['a', 'ghost'], [[0, 1]])
+        with self.assertRaises(ValueError):
+            agent._world_ordered_adjacency()
+
+
+class AdjacencyModeTests(unittest.TestCase):
+    def test_road_is_the_default_and_reads_sparse_adj(self):
+        agent = _Agent(['a', 'b', 'c'], ['a', 'b', 'c'], [[0, 1]], reachable=[[0, 2], [1, 2]])
+        np.testing.assert_array_equal(agent._world_ordered_adjacency(), np.array([[0, 1]]))
+
+    def test_contracted_reads_the_other_key(self):
+        agent = _Agent(['a', 'b', 'c'], ['a', 'b', 'c'], [[0, 1]],
+                       mode='contracted', reachable=[[0, 2], [1, 2]])
+        np.testing.assert_array_equal(
+            agent._world_ordered_adjacency(), np.array([[0, 2], [1, 2]]))
+
+    def test_contracted_is_remapped_like_the_default(self):
+        agent = _Agent(['c', 'a', 'b'], ['a', 'b', 'c'], [[0, 1]],
+                       mode='contracted', reachable=[[0, 2]])
+        np.testing.assert_array_equal(agent._world_ordered_adjacency(), np.array([[1, 0]]))
+
+    def test_missing_key_is_refused(self):
+        agent = _Agent(['a', 'b'], ['a', 'b'], [[0, 1]], mode='contracted')
         with self.assertRaises(ValueError):
             agent._world_ordered_adjacency()
 
