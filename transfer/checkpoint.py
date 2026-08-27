@@ -121,9 +121,23 @@ def validate_transfer_architecture(expected, actual):
             "use 'pooled' or 'graph'"
         )
 
+    # raw_state_dim is the zero-padded per-lane observation width, so it is a
+    # property of the network's widest intersection and differs whenever the
+    # networks do.  With the movement encoder off it is also the actor's input
+    # width, and a mismatch means the transferred weights genuinely do not fit.
+    # With it on, the actor sees movement_encoder_dim instead and nothing that
+    # transfers is shaped by the raw width -- MovementTokenEncoder is built over
+    # len(state_features), the features per lane, not the padded total.  So it
+    # becomes node-dependent, but only when both sides encode.  Both sides,
+    # because movement_encoder_enabled is itself compared strictly below: one
+    # side encoding and the other not is a real incompatibility.
+    node_dependent = set(NODE_DEPENDENT_KEYS)
+    if expected.get('movement_encoder_enabled') and actual.get('movement_encoder_enabled'):
+        node_dependent.add('raw_state_dim')
+
     mismatches = []
     for key in expected:
-        if key in NODE_DEPENDENT_KEYS:
+        if key in node_dependent:
             continue
         if actual.get(key) != expected[key]:
             mismatches.append((key, actual.get(key), expected[key]))
@@ -143,7 +157,7 @@ def validate_transfer_architecture(expected, actual):
 
     return sorted(
         key
-        for key in NODE_DEPENDENT_KEYS
+        for key in node_dependent
         if key in expected and actual.get(key) != expected[key]
     )
 

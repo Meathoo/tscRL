@@ -65,6 +65,13 @@ parser.add_argument(
          'full 12-feature contract. The subset changes spec_id(), so a subset '
          'run cannot silently load a full-contract checkpoint.',
 )
+parser.add_argument('--movement_encoder_enabled', type=str2bool, nargs='?', const=True,
+                    default=None,
+                    help='override model.movement_encoder_enabled: encode the per-lane '
+                         'observation as masked movement tokens, giving the actor a width '
+                         'that does not depend on the lane count. Needed to transfer '
+                         'between networks whose intersections differ in size (blocker B4 '
+                         'in transfer/TRANSFER.md). Never exercised before 2026-08-28.')
 parser.add_argument('--colight_adjacency', type=str, default=None,
                     choices=['road', 'contracted'],
                     help='override model.colight_adjacency: how two signals count as '
