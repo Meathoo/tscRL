@@ -238,7 +238,9 @@ case "$STAGE" in
         #   FEATURE_SETS="qr2=in_degree,lanes_per_in_road;qr4=in_degree,..."
         # Semicolons separate arms, '=' separates the tag from its feature list.
         # Without it the single FEATURES/FEATURE_TAG pair is used.
-        if [ -n "${FEATURE_SETS:-}" ]; then
+        if [ -n "${ARMS:-}" ]; then
+            apply_arms
+        elif [ -n "${FEATURE_SETS:-}" ]; then
             apply_feature_sets
         else
             CONFIGS=(
