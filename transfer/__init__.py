@@ -12,6 +12,8 @@ package removes, and the ones it deliberately does not.
 
 from .structural import (
     FEATURE_NAMES,
+    ALL_FEATURE_NAMES,
+    EXTENDED_FEATURE_NAMES,
     FEATURE_DIM,
     SPEC_VERSION,
     build_structural_features,
@@ -29,6 +31,8 @@ from .checkpoint import (
 
 __all__ = [
     'FEATURE_NAMES',
+    'ALL_FEATURE_NAMES',
+    'EXTENDED_FEATURE_NAMES',
     'FEATURE_DIM',
     'SPEC_VERSION',
     'build_structural_features',

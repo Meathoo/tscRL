@@ -458,6 +458,7 @@ class HyperLightPPOAgent(RLAgent):
                     self.world.intersections,
                     lanes_for_road=self._lanes_for_road,
                     features=self.structural_features,
+                    contracted_degrees=self._contracted_degrees(),
                 )
                 self.structural_spec = structural_spec_id(self.structural_features)
             else:
@@ -992,6 +993,40 @@ class HyperLightPPOAgent(RLAgent):
                     f' [{missing_total}/{resolved_total + missing_total} lanes had no '
                     f'resolvable length; those fall back to vehicle_max={self.vehicle_max:g}]'
                 )
+
+    def _contracted_degrees(self):
+        """Neighbours per intersection under the contracted adjacency.
+
+        Returned in ``world.intersections`` order, which is the caller's job
+        because ``graph['sparse_adj_reachable']`` is indexed by roadnet order.
+        On Ingolstadt21 those two orders disagree on all 21 rows -- reading the
+        graph without this remap is what had CoLight aggregating the neighbours
+        of unrelated intersections for the whole study.
+
+        None when the graph is unavailable; build_structural_features only
+        needs it if an extended feature was actually requested.
+        """
+        try:
+            graph = Registry.mapping['world_mapping']['graph_setting'].graph
+        except (AttributeError, KeyError, TypeError):
+            return None
+        adjacency = np.asarray(graph.get('sparse_adj_reachable', []), dtype=np.int64)
+        idx2id = graph.get('node_idx2id')
+        if adjacency.size == 0 or not idx2id:
+            return None
+        adjacency = adjacency.reshape(-1, 2)
+        world_pos = {}
+        for pos, inter in enumerate(self.world.intersections):
+            node_id = inter.id[3:] if inter.id.startswith('GS_') else inter.id
+            world_pos[node_id] = pos
+        degrees = np.zeros(len(self.world.intersections), dtype=np.float32)
+        for graph_src, _graph_dst in adjacency:
+            node_id = idx2id.get(int(graph_src))
+            pos = world_pos.get(node_id)
+            if pos is None:
+                return None
+            degrees[pos] += 1.0
+        return degrees
 
     def _lanes_for_road(self, inter, road):
         if hasattr(inter, 'road_lane_mapping') and road in inter.road_lane_mapping:

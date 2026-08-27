@@ -55,7 +55,33 @@ FEATURE_NAMES = tuple(name for name, _ in _FEATURE_SPEC)
 FEATURE_DIM = len(_FEATURE_SPEC)
 _SCALES = np.asarray([scale for _, scale in _FEATURE_SPEC], dtype=np.float32)
 
-_FEATURE_INDEX = {name: idx for idx, name in enumerate(FEATURE_NAMES)}
+#: Opt-in features that are NOT part of the v1 contract and never appear in the
+#: default spec_id.  They exist because every feature in _FEATURE_SPEC is
+#: constant on a synthetic grid except neighbor_count, and neighbor_count is
+#: zero at 19 of 21 intersections on Ingolstadt21 -- so no entry of the contract
+#: varies usefully on both kinds of network.  These count neighbours through the
+#: contracted adjacency (unsignalised junctions collapsed away, see
+#: common/utils.contract_uncontrolled), which on the CityFlow grids reproduces
+#: neighbor_count exactly and on Ingolstadt21 spreads 0-13 instead of 0-1.
+#:
+#: They must be requested by name through --structural_features.  Because the
+#: default spec is untouched, every existing checkpoint still loads.
+_EXTENDED_FEATURE_SPEC = (
+    ('contracted_neighbor_count', 8.0),
+    # Not bounded by 1 the way controlled_neighbor_ratio is: contracted degree
+    # can exceed in_degree (13 against 3 on Ingolstadt21), so the scale follows
+    # the module convention of landing typical values near [0, 1.5].
+    ('contracted_neighbor_ratio', 4.0),
+)
+
+EXTENDED_FEATURE_NAMES = tuple(name for name, _ in _EXTENDED_FEATURE_SPEC)
+ALL_FEATURE_NAMES = FEATURE_NAMES + EXTENDED_FEATURE_NAMES
+_ALL_SCALES = np.asarray(
+    [scale for _, scale in _FEATURE_SPEC] + [scale for _, scale in _EXTENDED_FEATURE_SPEC],
+    dtype=np.float32,
+)
+
+_FEATURE_INDEX = {name: idx for idx, name in enumerate(ALL_FEATURE_NAMES)}
 
 
 def resolve_features(features=None):
@@ -67,7 +93,7 @@ def resolve_features(features=None):
     can only ever produce one ``spec_id``.
     """
     if features is None:
-        return FEATURE_NAMES, np.arange(FEATURE_DIM)
+        return FEATURE_NAMES, np.arange(FEATURE_DIM)  # the v1 contract, unchanged
     if isinstance(features, str):
         wanted = [part.strip() for part in features.split(',') if part.strip()]
     else:
@@ -78,14 +104,14 @@ def resolve_features(features=None):
     if unknown:
         raise ValueError(
             'unknown structural feature(s): ' + ', '.join(unknown)
-            + '; valid names are ' + ', '.join(FEATURE_NAMES)
+            + '; valid names are ' + ', '.join(ALL_FEATURE_NAMES)
         )
     seen = set()
     duplicates = [n for n in wanted if n in seen or seen.add(n)]
     if duplicates:
         raise ValueError('duplicate structural feature(s): ' + ', '.join(sorted(set(duplicates))))
     indices = np.asarray(sorted(_FEATURE_INDEX[name] for name in wanted))
-    return tuple(FEATURE_NAMES[i] for i in indices), indices
+    return tuple(ALL_FEATURE_NAMES[i] for i in indices), indices
 
 
 def spec_id(features=None):
@@ -95,7 +121,14 @@ def spec_id(features=None):
     a 4-feature run from loading a 12-feature checkpoint (and vice versa).
     """
     names, _ = resolve_features(features)
-    return f"structural_v{SPEC_VERSION}:" + ','.join(names)
+    # Anything outside the contract is flagged, so a spec string can never be
+    # mistaken for v1 just because it starts that way.  SPEC_VERSION itself does
+    # not move: the twelve contract features and their scales are untouched, and
+    # every checkpoint written before the extended names existed still loads.
+    tag = f"structural_v{SPEC_VERSION}"
+    if any(name in EXTENDED_FEATURE_NAMES for name in names):
+        tag += '+ext'
+    return tag + ':' + ','.join(names)
 
 
 def _road_key(road):
@@ -144,7 +177,8 @@ def _neighbour_sets(intersections):
     return neighbours
 
 
-def build_structural_features(intersections, *, lanes_for_road, features=None):
+def build_structural_features(intersections, *, lanes_for_road, features=None,
+                              contracted_degrees=None):
     """Build ``[n_intersections, FEATURE_DIM]`` network-independent features.
 
     ``lanes_for_road(inter, road)`` is passed in as a callable -- the agent's
@@ -192,9 +226,32 @@ def build_structural_features(intersections, *, lanes_for_road, features=None):
         )
 
     raw = np.asarray(rows, dtype=np.float32).reshape(len(rows), FEATURE_DIM)
-    scaled = (raw / _SCALES).astype(np.float32)
     names, indices = resolve_features(features)
-    if len(indices) != FEATURE_DIM:
+
+    if indices.max(initial=-1) >= FEATURE_DIM:
+        # An extended feature was asked for.  contracted_degrees is the out-degree
+        # of each intersection under the contracted adjacency, in
+        # ``intersections`` order -- the caller owns that remap, because the
+        # graph is indexed by roadnet order and mixing the two is exactly the
+        # bug that made CoLight aggregate the wrong neighbours.
+        if contracted_degrees is None:
+            raise ValueError(
+                'features include ' + ', '.join(EXTENDED_FEATURE_NAMES)
+                + ' but contracted_degrees was not supplied')
+        degrees = np.asarray(contracted_degrees, dtype=np.float32).reshape(-1)
+        if degrees.shape[0] != raw.shape[0]:
+            raise ValueError(
+                'contracted_degrees has %d entries for %d intersections'
+                % (degrees.shape[0], raw.shape[0]))
+        in_degree_col = raw[:, FEATURE_NAMES.index('in_degree')]
+        extended = np.stack(
+            [degrees, degrees / np.maximum(1.0, in_degree_col)], axis=1)
+        raw = np.concatenate([raw, extended.astype(np.float32)], axis=1)
+        scaled = (raw / _ALL_SCALES).astype(np.float32)
+    else:
+        scaled = (raw / _SCALES).astype(np.float32)
+
+    if len(indices) != raw.shape[1]:
         scaled = scaled[:, indices]
         raw = raw[:, indices]
     return scaled, list(names), raw
