@@ -29,6 +29,8 @@
 #   scripts/transfer_study.sh features            # structural feature subset
 #   scripts/transfer_study.sh budget              # 500-episode flat vs chunked
 #
+# FEATURE_SETS / ARMS override the arms of features, zeroshot and finetune.
+#
 # Extra seeds for an existing stage are just a SEEDS override, e.g.
 #   WORLD=sumo NETWORK=sumo1x21 SEEDS="3 4" scripts/transfer_study.sh stage1
 #
@@ -74,6 +76,27 @@ CONFIGS=(
 # per entry.  Used by `features`, and by zeroshot/finetune so a transferred run
 # rebuilds the same subset its source checkpoint was trained on -- spec_id()
 # encodes the subset, so a mismatch is refused rather than silently loaded.
+# ARMS="tag|<run.py args>;tag2|<run.py args>" replaces CONFIGS with arbitrary
+# arms.  FEATURE_SETS covers the common case of structural subsets; this covers
+# anything else that needs a transfer stage, such as an embedding mode that is
+# not `structural`.  Semicolons separate arms, the first '|' separates tag from
+# args.
+apply_arms() {
+    CONFIGS=()
+    local saved_ifs="$IFS" entry tag extra
+    IFS=';'
+    for entry in $ARMS; do
+        [ -z "$entry" ] && continue
+        tag="${entry%%|*}"; extra="${entry#*|}"
+        CONFIGS+=("${tag}|${extra}")
+    done
+    IFS="$saved_ifs"
+    if [ "${#CONFIGS[@]}" -eq 0 ]; then
+        echo "ARMS parsed to no arms: $ARMS" >&2
+        exit 2
+    fi
+}
+
 apply_feature_sets() {
     CONFIGS=()
     local saved_ifs="$IFS" entry tag feats
@@ -251,6 +274,7 @@ case "$STAGE" in
         # well: source_checkpoint() finds it by tag, but the agent rebuilds its
         # meta vector from --structural_features, and spec_id() has to match.
         [ -n "${FEATURE_SETS:-}" ] && apply_feature_sets
+        [ -n "${ARMS:-}" ] && apply_arms
         NETWORK="${NETWORK:-cityflow4x4}"   # the SOURCE network of the checkpoints
         SEEDS="${SEEDS:-0 1 2}"
         TARGETS="${TARGETS:-cityflow16x3}"
