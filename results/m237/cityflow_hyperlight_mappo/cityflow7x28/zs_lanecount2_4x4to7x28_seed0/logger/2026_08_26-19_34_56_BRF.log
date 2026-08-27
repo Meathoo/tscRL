@@ -1,0 +1,7 @@
+structural conditioning spec: structural_v1:in_lane_count,out_lane_count
+structural features (min/mean/max): in_lane_count[12/12.00/12] out_lane_count[12/12.00/12]
+transfer from best_0.pt (16 -> 196 intersections) | actor_hypernet=4/4 | topology_encoder=4/4 | value_hypernet=4/4 | differs=node_count,phase_lengths
+  not transferred: agent_embeddings (per-intersection index table has no meaning in a different network)
+  not transferred: optimizer (Adam moments belong to the source task)
+Final Travel Time is 1394.2212, mean rewards: -310.6935, queue: 19.0347, delay: 0.0979, throughput: 9205
+Total time taken: 166.2725703716278
