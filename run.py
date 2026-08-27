@@ -49,6 +49,7 @@ parser.add_argument(
         'learned_topology',
         'one_hot_topology',
         'structural',
+        'constant',
     ],
     help='override model.agent_embedding_mode; "structural" drops the '
          'per-intersection index table so the meta vector transfers across '

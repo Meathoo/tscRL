@@ -396,6 +396,18 @@ class HyperLightPPOAgent(RLAgent):
         elif raw_embedding_mode == 'one_hot_topology':
             self.embedding_mode = 'one_hot'
             self.topology_aware_embedding = True
+        elif raw_embedding_mode == 'constant':
+            # Control arm: the meta vector is the same for every intersection,
+            # by construction and on any network.  It is not "smaller
+            # conditioning", it is none -- what it keeps is the property that
+            # makes structural transfer at all, namely that nothing about the
+            # meta path is indexed per intersection, so a checkpoint carries
+            # over whole.  Without it, struct-versus-learned credits structural
+            # conditioning both for encoding structure and for not handing the
+            # hypernetwork random codes after the shape filter drops learned's
+            # index table.  Those are separable and this arm separates them.
+            self.embedding_mode = 'constant'
+            self.topology_aware_embedding = True
         elif raw_embedding_mode in ('structural', 'structural_only'):
             # Transfer mode: the meta vector is produced *only* from
             # network-independent structural features, so it carries no
@@ -414,7 +426,7 @@ class HyperLightPPOAgent(RLAgent):
         elif self.embedding_mode == 'one_hot':
             self.agent_embeddings = torch.eye(self.sub_agents, dtype=torch.float32, device=self.device)
             self.meta_dim = self.sub_agents
-        elif self.embedding_mode == 'structural':
+        elif self.embedding_mode in ('structural', 'constant'):
             self.agent_embeddings = None
             self.meta_dim = int(cfg.get('agent_embedding_dim', 64))
         else:
@@ -431,7 +443,13 @@ class HyperLightPPOAgent(RLAgent):
             str(raw_feature_sel) if raw_feature_sel not in (None, '', 'all') else None
         )
         if self.topology_aware_embedding:
-            if self.embedding_mode == 'structural':
+            if self.embedding_mode == 'constant':
+                topology_features = np.ones((len(self.world.intersections), 1),
+                                            dtype=np.float32)
+                self.topology_feature_names = ['constant']
+                self.structural_raw_features = topology_features
+                self.structural_spec = 'constant_v1:constant'
+            elif self.embedding_mode == 'structural':
                 (
                     topology_features,
                     self.topology_feature_names,
@@ -812,7 +830,7 @@ class HyperLightPPOAgent(RLAgent):
     def transfer_summary(self):
         """Human-readable transfer/conditioning summary for the run log."""
         lines = []
-        if self.embedding_mode == 'structural':
+        if self.embedding_mode in ('structural', 'constant'):
             lines.append(f'structural conditioning spec: {self.structural_spec}')
             lines.append(summarize_raw_features(
                 self.structural_raw_features, self.topology_feature_names))
