@@ -117,7 +117,7 @@ meta[i] ──► actor_hypernet ──► θ_actor[i] ──► actor(obs[i]; �
 | **B1** | meta 永遠包含逐 index 的 `agent_embeddings`，換路網就對不上 | ✅ 本輪 |
 | **B2** | topology 特徵用「當前路網的 mean/std」z-score，同一種路口在不同路網得到不同向量 | ✅ 本輪 |
 | **B3** | `_validate_checkpoint_architecture` 逐鍵比對，`node_count` 一不同就 raise | ✅ 本輪 |
-| **B4** | 異質路網的 `state_dim` / `action_dim` 不同，張量根本裝不下 | ❌ 未做 |
+| **B4** | 異質路網的 `state_dim` / `action_dim` 不同，張量根本裝不下 | ✅ 2026-08-28/29（輸入端 `fc8f2c5`、輸出端 `43b335d`）|
 
 ### B1：純結構 condition
 
@@ -163,19 +163,35 @@ topology 只是「加上去」的修正項。所以舊的 topology 模式一樣�
 
 `--transfer_strict True` 會在有任何參數沒被初始化時直接失敗，而不是只記錄。
 
-### B4：異質路網的維度問題（未做）
+### B4：異質路網的維度問題（2026-08-28／29 完成）
 
-要打 Ingolstadt 還需要：
+兩端都是 opt-in，**兩邊都要開**，否則 `load_for_transfer` 仍然拒絕：
 
-- **輸入端**：`movement_encoder_enabled: True`。程式已經寫好
-  （`_build_movement_token_spec` + `MovementTokenEncoder`，masked transformer over lane-links），
-  輸出維度固定為 `movement_encoder_dim`，與車道數無關。**本輪完全沒有動它、也沒有測過它**。
-- **輸出端**：需要新寫 FRAP/MPLight 式的排列不變 phase head，
-  用 `movement_phase_availability`（已經建好）把 phase logit 定義成
-  「該 phase 放行的 movement token 的聚合」，讓 phase 數變成動態的。
+- **輸入端**：`--movement_encoder_enabled True`（`fc8f2c5`）。actor 的輸入寬度變成
+  `movement_encoder_dim`，與車道數無關，`raw_state_dim` 因此加入 node-dependent 清單。
+- **輸出端**：`--movement_phase_head True`（`43b335d`）。encoder 進入 `phase_invariant`
+  模式（兩個 A 寬的 token 區塊換成 `current_green` 與「服務比例」兩個純量，pooled 輸出
+  不再接 `current_phase`）；actor 改成每個相位讀一個向量——該相位放行的 movement token 的
+  mean+max，再接上 node state——生成的最後一層輸出 1 個數。`action_dim` 因此也加入
+  node-dependent 清單。critic 不動，仍讀每路口一個向量，所以 `node_state_dim` 與
+  `policy_input_dim` 從此是兩件事。
 
-在 B4 完成前，`load_for_transfer` 遇到 `action_dim` / `policy_input_dim` 不同時
-會直接報錯，並在錯誤訊息裡指回本節。這是刻意的：寧可清楚失敗，不要默默搬一半。
+已驗證可載入的配對：
+
+```
+Ingolstadt21 → cologne3      （同 world，4→4 相位，只需要輸入端）
+4x4 → Ingolstadt21           （跨 world，8→4 相位，需要兩端）
+```
+
+`movement_encoder_enabled` 與 `movement_phase_head` 都是**嚴格比對**：一邊開一邊沒開
+是真正的不相容，不是尺寸不合。舊 checkpoint 記的是 `False` 而非缺鍵，所以照樣通過驗證。
+
+**不支援的組合會直接報錯**（不做半套）：`hyper_adapter_mode` 的 `film`、
+`hyper_residual` 的 lora/head 變體、以及 IRU actor——它們都繞著 action 寬的輸出層成形。
+
+> ⚠️ 開 encoder 本身在 Ingolstadt21 上是有代價的（`mestruct` 對 `struct`，tail10
+> 246.59 ± 30.44 對 225.25 ± 0.65）。讀遷移數字前先確認單網表現，否則量到的是
+> encoder 的傷害不是 head 的效果。見 PROGRESS.md §6.2 (o-3)。
 
 ---
 

@@ -474,6 +474,89 @@ CoLight 在 Ingolstadt21 上輸給獨立的 DQN（339 vs 222）。追下去發�
 （v1 預設逐字不變、`structural_v1+ext:` 標記、9 個測試釘住，`3c60fd8`），
 將來若要試「加跳數或距離上限的版本」，機制已經在那裡。
 
+**(o) capacity 的日誌在說謊；B4 輸出端完成（2026-08-28～29）**
+
+三件事，前兩件是診斷、第三件是工程。
+
+**(o-1) `obs_norm_mode: capacity` 的摘要行在每一個 SUMO run 上都是錯的（`932f70e`）。**
+它印「156/156 lanes had no resolvable length; those fall back to vehicle_max=50」，
+讀起來像是 capacity 在 Ingolstadt21——唯一的異質網、也是唯一值得移植的地方——完全沒有生效。
+**但它一直是生效的。** `_build_generators()` 被呼叫兩次：一次在 `__init__`（此時
+`World.__init__` 已經 `libsumo.close()`，任何車道查詢都回
+"A network was not yet constructed"），一次在 `reset()`（引擎活著、長度查得到）。
+架構摘要印的是第一次的結果，rollout 用的是第二次的。同一個物件上探針量到：
+`__init__` 看到 min=1.000 max=50.000，`get_ob` 看到 min=1.000 max=36.133。
+`world_cityflow` 本來就有 `lane_length` 表，所以這只在 SUMO 上發作。
+修法是在 `world_sumo.World.__init__` 引擎還活著時把表建起來，行為零改變
+（一個 episode 逐位元重現：q_loss 0.00027738861325714325、travel 305.3036960454898）。
+
+誠實的數字值得記下來：**Ingolstadt21 的車道容量是 1.1–36.1 輛（33 倍全距）**，
+而 `fixed` 一律除以 50。促成這次移植的 16x3 只有 3.5 倍的路長差距。
+
+**(o-2) hypernetwork 對上「沒有 hypernetwork」，對照組本來就是乾淨的。**
+`reward_mode: queue` 時 `get_reward` 直接 return，`pressure_balance_coef` 根本沒作用，
+所以 hyperlight 的 reward 與 `agent/native_ppo.py` 的 `get_reward` 逐行相同；
+obs 正規化、PPO 超參、250 ep 預算、pooled centralized critic 也全部一致。
+唯一差別就是權重是共用 MLP 還是逐路口生成。Ingolstadt21，同一組統計量：
+
+| | best | last | tail10 |
+|---|---:|---:|---:|
+| `struct`（hypernet，5 seeds） | **203.75 ± 6.89** | **220.55 ± 6.26** | **226.47 ± 9.12** |
+| `mappo`（無 hypernet，3 seeds） | 230.21 ± 8.44 | 270.34 ± 10.04 | 263.00 ± 6.97 |
+
+**hypernetwork 在異質網上值 36.5 秒（tail10），三個 seed 不重疊。**
+（先前把 230.21 當成 mappo 的 `last` 來比是錯的——那是它的 `best`。）
+還沒答的是**再往下拆一層**：贏的是「逐路口條件化」還是「hypernetwork 這個參數化本身」。
+`constmeta` 在 Ingolstadt21 上正是這一格（meta 由建構保證對每個路口相同 →
+生成的權重每個路口都一樣 → 功能上就是共用策略，只是參數化不同）。
+`constmeta` ≈ `mappo` 就是條件化在贏；`constmeta` ≈ `struct` 就是參數化在贏，與條件化無關。
+2026-08-29 起在 `.232` 上跑，3 seeds × 250 ep。
+
+**(o-3) B4 輸出端：排列不變的 phase head（`43b335d`）。**
+輸入端（`fc8f2c5`）之後 Ingolstadt21 → cologne3 能載入，**是因為兩張網最寬的號誌
+碰巧都是 4 相位**，不是因為能力。`action_dim` 仍然決定 actor 最後一層、以及 movement
+encoder token 輸入裡的兩個 A 寬區塊。`--movement_phase_head` 把相位數從所有參數形狀裡拿掉：
+
+- encoder 的 `phase_invariant`：兩個 A 寬區塊換成兩個純量（`current_green`
+  本來就算好了，加上「這個號誌有多少比例的相位放行此 movement」）；pooled 輸出不再接 `current_phase`。
+- actor 改讀**每個相位一個向量**（該相位放行的 movement token 的 mean+max，再接上
+  node state 當脈絡），生成的最後一層輸出 1 個數 → 同一個 MLP 評分所有相位。
+- critic 不動，仍讀每路口一個向量（所以 `node_state_dim` 與 `policy_input_dim` 從此分開）。
+
+端到端驗證，**這個 codebase 第一次同時跨模擬器與跨相位數的轉移**：
+
+```
+4x4（cityflow, 8 相位）→ Ingolstadt21（sumo, 4 相位）
+  actor_hypernet=4/4 movement_encoder=20/20 topology_encoder=4/4 value_hypernet=4/4
+  differs=action_dim,node_count,phase_lengths,movement_*
+```
+
+film、lora/head residual、IRU actor 一律明確拒絕（它們都繞著 action 寬的輸出層成形）。
+預設路徑逐位元不變（q_loss 0.00025732635856709544、travel 298.7574435318275），
+110 個測試通過、其中 12 個是新的（含「換兩個相位的編號，logit 跟著換」與
+「A=4 與 A=8 的 encoder 權重形狀完全相同」）。
+
+> ⚠️ **先別預期它會贏。** 同機器上 movement encoder 開啟本身就是有代價的：
+> `mestruct` 對上 `struct`（3 seeds，tail10）是 246.59 ± 30.44 對 225.25 ± 0.65——
+> 平均差 21 秒、標準差差 47 倍。phase head 疊在這個 encoder 之上，所以**在讀任何
+> 遷移數字之前，要先確認開啟 encoder + phase head 的單網表現站得住**，
+> 否則量到的是 encoder 的傷害不是 head 的效果。
+
+**(p) capacity 在 Ingolstadt21 上的驗證（執行中，`.232`）**
+
+`structcap` = `struct` + `--obs_norm_mode capacity`，3 seeds × 250 ep，對照同機器的 `struct`。
+ep90 的中途讀數（**未定案**，還有 160 個 episode，16x3 上 `struct` 到 ep245 都還在下降）：
+
+| | ep25 | ep50 | ep75 | ep90 |
+|---|---:|---:|---:|---:|
+| `struct` | 259.6 | 219.4 | 224.6 | 224.8 |
+| `structcap` | 318.4 | 258.7 | 240.7 | 251.1 |
+
+**目前是落後的，與 16x3 上「早 75–100 個 episode 收斂」的方向相反。**
+如果收尾維持這個方向，那就表示 §2.4 那個唯一成功的移植**不能推廣到異質路網**，
+而理由值得查：Ingolstadt21 的容量全距是 33 倍，clip=1.5 之下短車道（1.1 輛）
+幾乎永遠飽和，等於把那些車道的觀測壓成常數。`obs_capacity_clip` 沒有掃過。
+
 ### 6.3 執行中 / 待辦
 
 - (a)–(m) 已完成，數字在 §6.2。(j) 的驗證、(k) 的維度掃描、(l) 的遷移測試、(m) 的 CoLight 三層問題都已收尾。
