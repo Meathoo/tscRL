@@ -427,6 +427,20 @@ class World(object):
         # TODO: to see if pass observation and its shape by generator
         self.all_roads = [x for x in self.eng.edge.getIDList()]
         self.all_lanes = [ x for x in self.eng.lane.getIDList()]
+        # Lane lengths have to be read here, while the engine is still alive:
+        # this __init__ closes the connection a few lines down, so anything
+        # built afterwards -- the agent included -- gets "A network was not yet
+        # constructed" back from a lane query.  world_cityflow builds the same
+        # table from its roadnet, and transfer/observation.py consults
+        # world.lane_length before it ever asks the engine.  Without this,
+        # obs_norm_mode='capacity' fell back to vehicle_max for all 156 lanes of
+        # Ingolstadt21 and was silently a no-op on every SUMO network.
+        self.lane_length = {}
+        for lane in self.all_lanes:
+            try:
+                self.lane_length[lane] = float(self.eng.lane.getLength(lane))
+            except Exception:
+                pass
         # for itsec in self.intersections:
         #     for road in itsec.road_lane_mapping.keys():
         #         if itsec.road_lane_mapping[road] and road not in self.all_roads:

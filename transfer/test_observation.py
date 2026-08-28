@@ -26,7 +26,12 @@ class _CityFlowWorld:
 
 
 class _SumoWorld:
-    """The SUMO world keeps no table; its engine answers per lane."""
+    """Engine-only: no table, the engine answers per lane.
+
+    world_sumo now builds a ``lane_length`` table of its own, so this is the
+    fallback path rather than the normal one.  It is kept because the fallback
+    has to keep working for any world that does not build a table.
+    """
 
     def __init__(self, lengths):
         self._lengths = dict(lengths)
@@ -36,6 +41,24 @@ class _SumoWorld:
         if lane_id not in self._lengths:
             raise KeyError(lane_id)
         return self._lengths[lane_id]
+
+
+class _SumoWorldClosedEngine:
+    """A SUMO world after ``World.__init__`` has closed its connection.
+
+    This is the state the agent is constructed in: ``libsumo.close()`` has run,
+    so every lane query raises "A network was not yet constructed".  The table
+    read while the engine was alive is the only source left, and it is why
+    world_sumo builds one.
+    """
+
+    def __init__(self, lengths):
+        self.lane_length = dict(lengths)
+        self.eng = SimpleNamespace(lane=SimpleNamespace(getLength=self._dead))
+
+    @staticmethod
+    def _dead(lane_id):
+        raise RuntimeError('A network was not yet constructed.')
 
 
 class LaneLengthTests(unittest.TestCase):
@@ -50,6 +73,18 @@ class LaneLengthTests(unittest.TestCase):
     def test_unknown_lane_is_none_not_an_exception(self):
         self.assertIsNone(lane_length(_CityFlowWorld({}), 'nope'))
         self.assertIsNone(lane_length(_SumoWorld({}), 'nope'))
+
+    def test_a_closed_sumo_engine_still_resolves_from_the_table(self):
+        # The agent is built after World.__init__ closes the connection, so
+        # without the table this returns None for every lane and capacity
+        # normalisation silently degrades to the vehicle_max fallback.
+        world = _SumoWorldClosedEngine({'a_0': 82.5})
+        self.assertEqual(lane_length(world, 'a_0'), 82.5)
+        self.assertAlmostEqual(lane_capacity(world, 'a_0'), 82.5 / DEFAULT_HEADWAY_M)
+
+    def test_a_closed_sumo_engine_without_a_table_reports_unknown(self):
+        world = _SumoWorldClosedEngine({})
+        self.assertIsNone(lane_length(world, 'a_0'))
 
     def test_capacity_is_length_over_headway(self):
         world = _CityFlowWorld({'a_0': 600.0})
