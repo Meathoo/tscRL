@@ -149,6 +149,13 @@ class HyperLightPPOAgent(RLAgent):
             cfg.get('movement_encoder_ff_dim', 2 * self.movement_token_dim)
         )
         self.movement_encoder_dropout = float(cfg.get('movement_encoder_dropout', 0.0))
+        # Blocker B4, output half.  Without this the actor's last layer is
+        # (action_dim, hidden), so a checkpoint can only ever be loaded into a
+        # network whose signals have the same number of green phases.  With it,
+        # a phase is scored from the movement tokens it gives green to and the
+        # generated actor emits one number per phase, so the phase count leaves
+        # the parameter shapes entirely.  See transfer/TRANSFER.md.
+        self.movement_phase_head = bool(cfg.get('movement_phase_head', False))
 
         self.graph_critic_hidden_dim = int(cfg.get('graph_critic_hidden_dim', 128))
         self.graph_critic_layers = int(cfg.get('graph_critic_layers', 2))
@@ -360,6 +367,26 @@ class HyperLightPPOAgent(RLAgent):
         self.movement_source_position = None
         self.movement_position = None
         self.movement_turn_features = None
+        if self.movement_phase_head and not self.movement_encoder_enabled:
+            raise ValueError(
+                'movement_phase_head scores phases from movement tokens, so it '
+                'requires movement_encoder_enabled'
+            )
+        if self.movement_phase_head and self.hyper_adapter_mode not in ('generated', 'none'):
+            # film and the lora/head residual variants all reshape the actor
+            # around a [B, N, D] input and an action-wide output.  Rather than
+            # half-port them, refuse: a wrong-but-running actor here would be
+            # read as a result about the phase head.
+            raise ValueError(
+                'movement_phase_head supports hyper_adapter_mode generated or '
+                f'none, not {self.hyper_adapter_mode}'
+            )
+        if self.movement_phase_head and self.hyper_residual:
+            raise ValueError(
+                'movement_phase_head does not support hyper_residual: the lora '
+                'and head variants both size themselves on an action-wide '
+                'output layer that the phase head does not have'
+            )
         if self.movement_encoder_enabled:
             self._build_movement_token_spec()
             self.movement_encoder = MovementTokenEncoder(
@@ -372,18 +399,29 @@ class HyperLightPPOAgent(RLAgent):
                 feedforward_dim=self.movement_encoder_ff_dim,
                 dropout=self.movement_encoder_dropout,
                 static_feature_dim=4,
+                phase_invariant=self.movement_phase_head,
             ).to(self.device)
-            self.policy_input_dim = self.movement_encoder_dim
+            self.node_state_dim = self.movement_encoder_dim
         else:
-            self.policy_input_dim = self.state_dim
+            self.node_state_dim = self.state_dim
+        # The critic always reads one vector per intersection.  The actor reads
+        # that too, unless the phase head is on, in which case it reads one
+        # vector per phase and emits a single score for it -- so its input width
+        # is a property of the movement tokens, not of the phase count.
+        if self.movement_phase_head:
+            self.phase_feature_dim = 2 * self.movement_token_dim + self.movement_encoder_dim
+            self.policy_input_dim = self.phase_feature_dim
+        else:
+            self.phase_feature_dim = 0
+            self.policy_input_dim = self.node_state_dim
         if not self.centralized_critic:
-            self.value_input_dim = self.policy_input_dim
+            self.value_input_dim = self.node_state_dim
         elif self.centralized_critic_mode == 'concat':
-            self.value_input_dim = self.policy_input_dim * self.sub_agents
+            self.value_input_dim = self.node_state_dim * self.sub_agents
         elif self.centralized_critic_mode == 'pooled':
-            self.value_input_dim = self.policy_input_dim * 5
+            self.value_input_dim = self.node_state_dim * 5
         elif self.centralized_critic_mode == 'graph':
-            self.value_input_dim = self.policy_input_dim
+            self.value_input_dim = self.node_state_dim
         else:
             raise ValueError(f"Unknown centralized_critic_mode: {self.centralized_critic_mode}")
         self.action_mask = self._build_action_mask().to(self.device)
@@ -575,7 +613,15 @@ class HyperLightPPOAgent(RLAgent):
         if self.cos_enabled:
             self.cos_pairwise_hops, self.cos_pairwise_distances = self._build_cos_pairwise_metrics()
 
+        # One score per phase, applied to each phase's own feature vector, or
+        # the usual one logit per action index.
+        actor_output_dim = 1 if self.movement_phase_head else self.action_space.n
         if self.actor_arch == 'iru':
+            if self.movement_phase_head:
+                raise ValueError(
+                    'movement_phase_head is implemented for the mlp actor only; '
+                    'the IRU actor carries per-action state across its steps'
+                )
             self.base_actor = IRUNetwork(
                 self.policy_input_dim,
                 self.iru_actor_hidden_dim,
@@ -589,7 +635,7 @@ class HyperLightPPOAgent(RLAgent):
                 self.policy_input_dim,
                 self.actor_hidden1,
                 self.actor_hidden2,
-                self.action_space.n,
+                actor_output_dim,
             ).to(self.device)
         self._iru_generated_actor = bool(
             self.actor_arch == 'iru' and self.hyper_adapter_mode == 'generated'
@@ -694,7 +740,7 @@ class HyperLightPPOAgent(RLAgent):
         if self.graph_critic_enabled:
             self.graph_edge_index, self.graph_edge_weight = self._build_directed_graph_edges()
             self.graph_critic = DirectedGraphCritic(
-                self.policy_input_dim,
+                self.node_state_dim,
                 hidden_dim=self.graph_critic_hidden_dim,
                 num_layers=self.graph_critic_layers,
                 num_heads=self.graph_critic_heads,
@@ -1217,8 +1263,14 @@ class HyperLightPPOAgent(RLAgent):
         )
 
     def _encode_policy_state(self, state_tensor):
+        """Node states for the critic, and per-phase features for the actor.
+
+        Returns ``(node_state, phase_features)``.  ``phase_features`` is None
+        unless the permutation-invariant phase head is on, in which case it is
+        ``[B, N, A, phase_feature_dim]`` and the actor consumes it instead.
+        """
         if self.movement_encoder is None:
-            return state_tensor
+            return state_tensor, None
 
         batch_size = state_tensor.shape[0]
         feature_indices = self.movement_feature_indices.reshape(self.sub_agents, -1)
@@ -1257,7 +1309,19 @@ class HyperLightPPOAgent(RLAgent):
                 num_classes=self.action_space.n,
             ).to(dtype=state_tensor.dtype)
 
-        return self.movement_encoder(
+        if not self.movement_phase_head:
+            node_state = self.movement_encoder(
+                dynamic_features,
+                self.movement_token_mask,
+                self.movement_phase_availability,
+                current_phase,
+                source_position=self.movement_source_position,
+                movement_position=self.movement_position,
+                static_features=self.movement_turn_features,
+            )
+            return node_state, None
+
+        node_state, tokens = self.movement_encoder(
             dynamic_features,
             self.movement_token_mask,
             self.movement_phase_availability,
@@ -1265,7 +1329,55 @@ class HyperLightPPOAgent(RLAgent):
             source_position=self.movement_source_position,
             movement_position=self.movement_position,
             static_features=self.movement_turn_features,
+            return_tokens=True,
         )
+        return node_state, self._phase_features(node_state, tokens)
+
+    def _phase_features(self, node_state, tokens):
+        """One feature vector per phase, aggregated over the movements it serves.
+
+        ``movement_phase_availability`` is ``[N, M, A]`` and already says which
+        movements each phase gives green to, so a phase is described by pooling
+        its own movements' tokens.  Mean and max together, because mean alone
+        cannot tell one saturated approach from four half-full ones and max
+        alone forgets how many there are.  The node state is appended so a phase
+        can be scored against the intersection it sits in rather than in
+        isolation.
+
+        Nothing in the result is indexed by phase identity: swap two phases in
+        the signal plan and their feature vectors swap with them.  That is what
+        makes the head transferable, and what the invariance test pins.
+        """
+        batch_size = tokens.shape[0]
+        # [N, M, A] -> [1, N, M, A, 1], gated by the padding mask so a padded
+        # token cannot contribute to any phase.
+        available = self.movement_phase_availability * self.movement_token_mask.unsqueeze(-1)
+        available = available.to(dtype=tokens.dtype).unsqueeze(0).unsqueeze(-1)
+        weighted = tokens.unsqueeze(3) * available  # [B, N, M, A, T]
+        counts = available.sum(dim=2).clamp_min(1.0)  # [1, N, A, 1]
+        mean_pool = weighted.sum(dim=2) / counts
+        # A phase that serves no movement -- a padded action index -- would take
+        # the min of an empty set, so mask those to zero rather than to -inf and
+        # let the action mask drop them downstream.
+        neg_inf = torch.finfo(tokens.dtype).min
+        max_pool = torch.where(
+            available.bool(),
+            tokens.unsqueeze(3),
+            torch.full_like(weighted, neg_inf),
+        ).max(dim=2).values
+        max_pool = torch.where(
+            counts > 0,
+            max_pool,
+            torch.zeros_like(max_pool),
+        )
+        max_pool = max_pool.masked_fill(max_pool == neg_inf, 0.0)
+        node_context = node_state.unsqueeze(2).expand(
+            batch_size,
+            self.sub_agents,
+            self.action_space.n,
+            node_state.shape[-1],
+        )
+        return torch.cat([mean_pool, max_pool, node_context], dim=-1)
 
     def _build_directed_graph_edges(self):
         edge_index = None
@@ -2184,6 +2296,17 @@ class HyperLightPPOAgent(RLAgent):
         for name, shape, start, end in self.actor_layout:
             params[name] = theta[..., start:end].view(*theta.shape[:-1], *shape)
 
+        if state_tensor.dim() == 4:
+            # Phase head: [B, N, A, D] against per-node weights.  The same
+            # generated MLP scores every phase of an intersection, which is
+            # exactly why its output width is 1 and not the phase count.
+            x = torch.einsum('bnai,bnoi->bnao', state_tensor, params['fc1.weight'])
+            x = self._activate(x + params['fc1.bias'].unsqueeze(2))
+            x = torch.einsum('bnai,bnoi->bnao', x, params['fc2.weight'])
+            x = self._activate(x + params['fc2.bias'].unsqueeze(2))
+            x = torch.einsum('bnai,bnoi->bnao', x, params['fc3.weight'])
+            return (x + params['fc3.bias'].unsqueeze(2)).squeeze(-1)
+
         x = torch.einsum('bni,bnoi->bno', state_tensor, params['fc1.weight']) + params['fc1.bias']
         x = self._activate(x)
         x = torch.einsum('bni,bnoi->bno', x, params['fc2.weight']) + params['fc2.bias']
@@ -2423,21 +2546,26 @@ class HyperLightPPOAgent(RLAgent):
             cos_ids=cos_ids,
             deterministic_cos=deterministic_cos,
         )
-        policy_state = self._encode_policy_state(state_tensor)
+        policy_state, phase_features = self._encode_policy_state(state_tensor)
+        # The critic keeps reading one vector per intersection; only the actor
+        # switches to one vector per phase.
+        actor_state = policy_state if phase_features is None else phase_features
         actor_theta = None
         actor_base = None
         actor_delta = None
         actor_head_delta = None
         film_params = None
         if self.hyper_adapter_mode == 'none':
-            raw_logits = self.base_actor(policy_state)
+            raw_logits = self.base_actor(actor_state)
+            if phase_features is not None:
+                raw_logits = raw_logits.squeeze(-1)
         elif self.hyper_adapter_mode == 'film':
             film_params = self.actor_hypernet(meta)
-            raw_logits = self._actor_film_forward(policy_state, film_params)
+            raw_logits = self._actor_film_forward(actor_state, film_params)
         elif self._use_head_residual():
             generated_head = self.actor_hypernet(meta)
             raw_logits, actor_head_delta = self._actor_head_residual_forward(
-                policy_state,
+                actor_state,
                 generated_head,
             )
         else:
@@ -2445,7 +2573,7 @@ class HyperLightPPOAgent(RLAgent):
             if self._iru_generated_actor:
                 raw_logits = self._actor_forward_iru_generated(policy_state, actor_theta)
             else:
-                raw_logits = self._actor_forward(policy_state, actor_theta)
+                raw_logits = self._actor_forward(actor_state, actor_theta)
         logits = raw_logits.masked_fill(~self.action_mask.unsqueeze(0), -1e9)
 
         collect_adapter_diagnostics = bool(
@@ -3325,8 +3453,16 @@ class HyperLightPPOAgent(RLAgent):
             'hyper_lora_value_rank': int(self.hyper_lora_value_rank),
             'hyper_lora_bias': self.hyper_lora_bias,
             'movement_encoder_enabled': self.movement_encoder_enabled,
+            # False rather than absent on the default path, so checkpoints that
+            # predate the phase head still validate.  It is compared strictly:
+            # one side scoring phases from movements and the other emitting a
+            # fixed logit vector are different actors, not a size mismatch.
+            'movement_phase_head': self.movement_phase_head,
             'movement_state_features': list(self.state_features),
-            'movement_encoder_dim': int(self.policy_input_dim),
+            # This is the encoder's own output width.  It used to read
+            # policy_input_dim, which was the same number until the phase head
+            # gave the actor a wider, per-phase input.
+            'movement_encoder_dim': int(self.movement_encoder_dim),
             'movement_token_dim': int(self.movement_token_dim),
             'movement_encoder_heads': int(self.movement_encoder_heads),
             'movement_encoder_layers': int(self.movement_encoder_layers),

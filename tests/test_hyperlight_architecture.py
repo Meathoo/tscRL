@@ -84,6 +84,65 @@ class MovementTokenEncoderTests(unittest.TestCase):
             rtol=2e-6,
         )
 
+    def _phase_invariant_encoder(self, action_dim, token_dim=16, output_dim=12):
+        return MovementTokenEncoder(
+            2,
+            action_dim,
+            token_dim=token_dim,
+            output_dim=output_dim,
+            num_heads=4,
+            num_layers=1,
+            dropout=0.0,
+            phase_invariant=True,
+        ).eval()
+
+    def test_phase_invariant_weights_do_not_depend_on_the_phase_count(self):
+        # The whole point of the output half of B4: the same encoder shapes
+        # come out whether the network signals in 4 phases or 8, so a
+        # checkpoint can cross between them.
+        four = self._phase_invariant_encoder(4)
+        eight = self._phase_invariant_encoder(8)
+        self.assertEqual(
+            {k: tuple(v.shape) for k, v in four.state_dict().items()},
+            {k: tuple(v.shape) for k, v in eight.state_dict().items()},
+        )
+        # ...and the default encoder does depend on it, which is why it blocks.
+        wide = MovementTokenEncoder(2, 8, token_dim=16, output_dim=12, num_heads=4)
+        narrow = MovementTokenEncoder(2, 4, token_dim=16, output_dim=12, num_heads=4)
+        self.assertNotEqual(
+            {k: tuple(v.shape) for k, v in wide.state_dict().items()},
+            {k: tuple(v.shape) for k, v in narrow.state_dict().items()},
+        )
+
+    def test_phase_invariant_output_survives_a_phase_relabelling(self):
+        # Renumber the phases of the signal plan -- same plan, different order
+        # in the table -- and the encoding must not move. The non-invariant
+        # encoder reads the availability columns positionally and does move.
+        encoder = self._phase_invariant_encoder(4)
+        dynamic, mask, phase_mask, phase, source_position, movement_position = self._inputs()
+        args = (dynamic, mask, phase_mask, phase, source_position, movement_position)
+        output = encoder(*args)
+        self.assertEqual((2, 3, 12), tuple(output.shape))
+
+        phase_permutation = torch.tensor([2, 0, 3, 1])
+        relabelled = encoder(
+            dynamic,
+            mask,
+            phase_mask[:, :, phase_permutation],
+            phase[:, :, phase_permutation],
+            source_position,
+            movement_position,
+        )
+        torch.testing.assert_close(output, relabelled, atol=2e-6, rtol=2e-6)
+
+    def test_returning_tokens_does_not_change_the_node_state(self):
+        encoder = self._phase_invariant_encoder(4)
+        args = self._inputs()
+        node_state = encoder(*args)
+        also_node_state, tokens = encoder(*args, return_tokens=True)
+        torch.testing.assert_close(node_state, also_node_state)
+        self.assertEqual((2, 3, 5, 16), tuple(tokens.shape))
+
     def test_masked_tokens_have_zero_gradient(self):
         encoder = MovementTokenEncoder(
             2,
@@ -464,6 +523,75 @@ class HyperLightGraphIntegrationTests(unittest.TestCase):
         state = agent._build_state_np(agent.get_ob(), agent.get_phase())
         return torch.tensor(state, dtype=torch.float32).unsqueeze(0)
 
+    def _phase_head_agent(self):
+        cfg = Registry.mapping['model_mapping']['setting'].param
+        cfg['movement_encoder_enabled'] = True
+        cfg['movement_phase_head'] = True
+        # load_config hands back a shared dict, so an earlier test's FiLM
+        # setting can still be sitting here. State what this agent needs.
+        cfg['hyper_adapter_mode'] = 'generated'
+        cfg['hyper_residual'] = False
+        return HyperLightPPOAgent(self.world, 0)
+
+    def test_phase_head_scores_each_phase_from_its_own_movements(self):
+        agent = self._phase_head_agent()
+        # The actor now reads one vector per phase, not one per intersection.
+        self.assertEqual(2 * agent.movement_token_dim + agent.movement_encoder_dim,
+                         agent.policy_input_dim)
+        self.assertEqual(agent.movement_encoder_dim, agent.node_state_dim)
+        # ...and its generated last layer emits a single number.
+        last = [entry for entry in agent.actor_layout if entry[0] == 'fc3.weight'][0]
+        self.assertEqual((1, agent.actor_hidden2), last[1])
+
+        state = self._state(agent)
+        logits, values = agent._policy_value(state)
+        self.assertEqual((1, 3, 4), tuple(logits.shape))
+        self.assertEqual((1, 3), tuple(values.shape))
+        self.assertTrue(torch.isfinite(values).all())
+        # The action mask still retires the phases a signal does not have.
+        self.assertTrue((logits[0, 0, 2:] == -1e9).all())
+
+    def test_relabelling_two_phases_permutes_their_logits(self):
+        # Equivariance, which is the property the head is named for: phase 0 is
+        # not "phase 0", it is "the set of movements phase 0 lets through". Swap
+        # the two in the signal table and their scores swap with them. Both are
+        # valid at all three fake intersections, so the action mask does not
+        # move and only the relabelling is under test.
+        agent = self._phase_head_agent()
+        state = self._state(agent)
+        logits, _ = agent._policy_value(state)
+
+        swap = torch.tensor([1, 0, 2, 3])
+        agent.movement_phase_availability = agent.movement_phase_availability[:, :, swap]
+        swapped_state = state.clone()
+        phase_block = swapped_state[..., agent.ob_length:agent.ob_length + 4]
+        swapped_state[..., agent.ob_length:agent.ob_length + 4] = phase_block[..., swap]
+        swapped_logits, _ = agent._policy_value(swapped_state)
+
+        torch.testing.assert_close(
+            logits[0, :, :2],
+            swapped_logits[0, :, :2].flip(-1),
+            atol=2e-5,
+            rtol=2e-5,
+        )
+
+    def test_the_phase_head_refuses_the_adapters_it_cannot_shape(self):
+        cfg = Registry.mapping['model_mapping']['setting'].param
+        cfg['movement_encoder_enabled'] = True
+        cfg['movement_phase_head'] = True
+        cfg['hyper_adapter_mode'] = 'film'
+        with self.assertRaises(ValueError) as ctx:
+            HyperLightPPOAgent(self.world, 0)
+        self.assertIn('movement_phase_head', str(ctx.exception))
+
+    def test_the_phase_head_requires_the_movement_encoder(self):
+        cfg = Registry.mapping['model_mapping']['setting'].param
+        cfg['movement_encoder_enabled'] = False
+        cfg['movement_phase_head'] = True
+        with self.assertRaises(ValueError) as ctx:
+            HyperLightPPOAgent(self.world, 0)
+        self.assertIn('movement_encoder_enabled', str(ctx.exception))
+
     def test_policy_value_uses_raw_rollout_state_and_all_new_modules(self):
         agent = HyperLightGraphMAPPOAgent(self.world, 0)
         state = self._state(agent)
@@ -644,7 +772,7 @@ class HyperLightGraphIntegrationTests(unittest.TestCase):
             Registry.mapping['model_mapping']['setting'] = SimpleNamespace(param=cfg)
             agent = HyperLightPPOAgent(self.world, 0)
             state = self._state(agent)
-            policy_state = agent._encode_policy_state(state)
+            policy_state, _ = agent._encode_policy_state(state)
             value_input = agent._value_input(policy_state)
             meta = agent._agent_meta(1)
 

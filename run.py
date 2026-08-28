@@ -72,6 +72,14 @@ parser.add_argument('--movement_encoder_enabled', type=str2bool, nargs='?', cons
                          'that does not depend on the lane count. Needed to transfer '
                          'between networks whose intersections differ in size (blocker B4 '
                          'in transfer/TRANSFER.md). Never exercised before 2026-08-28.')
+parser.add_argument('--movement_phase_head', type=str2bool, nargs='?', const=True,
+                    default=None,
+                    help='override model.movement_phase_head: score each phase from the '
+                         'movement tokens it gives green to, instead of emitting one logit '
+                         'per action index. Removes the phase count from every parameter '
+                         'shape, which is what lets a checkpoint cross networks that signal '
+                         'differently (blocker B4, output half). Requires '
+                         '--movement_encoder_enabled.')
 parser.add_argument('--colight_adjacency', type=str, default=None,
                     choices=['road', 'contracted'],
                     help='override model.colight_adjacency: how two signals count as '

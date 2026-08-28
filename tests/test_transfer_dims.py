@@ -57,13 +57,68 @@ class RawStateDimTests(unittest.TestCase):
         self.assertIn('policy_input_dim', str(ctx.exception))
 
     def test_action_dim_is_untouched_by_this(self):
-        # the output side of B4 is a separate problem and stays blocked
+        # the input half alone does not unblock the output half
         source = _sig(movement_encoder_enabled=True, policy_input_dim=64)
         target = _sig(movement_encoder_enabled=True, policy_input_dim=64,
                       raw_state_dim=20, action_dim=8)
         with self.assertRaises(TransferError) as ctx:
             validate_transfer_architecture(source, target)
         self.assertIn('action_dim', str(ctx.exception))
+
+
+class PhaseHeadTests(unittest.TestCase):
+    """The output half: action_dim stops being a blocker, but only with the head."""
+
+    @staticmethod
+    def _head(**over):
+        base = dict(
+            movement_encoder_enabled=True,
+            movement_phase_head=True,
+            movement_encoder_dim=64,
+            policy_input_dim=192,   # 2 * token_dim + encoder_dim, no action_dim in it
+        )
+        base.update(over)
+        return _sig(**base)
+
+    def test_a_four_phase_checkpoint_loads_into_an_eight_phase_run(self):
+        source = self._head(action_dim=4, phase_lengths=(2, 3, 4))
+        target = self._head(action_dim=8, node_count=16, phase_lengths=(8,) * 16,
+                            raw_state_dim=24)
+        differing = validate_transfer_architecture(source, target)
+        self.assertIn('action_dim', differing)
+
+    def test_without_the_head_the_same_pair_is_refused(self):
+        source = self._head(action_dim=4, movement_phase_head=False, policy_input_dim=64)
+        target = self._head(action_dim=8, movement_phase_head=False, policy_input_dim=64,
+                            node_count=16, raw_state_dim=24)
+        with self.assertRaises(TransferError) as ctx:
+            validate_transfer_architecture(source, target)
+        self.assertIn('action_dim', str(ctx.exception))
+
+    def test_one_sided_head_is_refused(self):
+        # A phase-scoring actor and a fixed-logit actor are different actors,
+        # not differently sized ones, so this must not be waved through.
+        source = self._head(action_dim=4)
+        target = self._head(action_dim=4, movement_phase_head=False, policy_input_dim=64)
+        with self.assertRaises(TransferError) as ctx:
+            validate_transfer_architecture(source, target)
+        self.assertIn('movement_phase_head', str(ctx.exception))
+
+    def test_the_actor_input_width_must_still_match(self):
+        # phase_feature_dim is 2 * token_dim + encoder_dim; different token
+        # dims give differently shaped generated actors and must be refused.
+        source = self._head(action_dim=4)
+        target = self._head(action_dim=8, policy_input_dim=160, node_count=16)
+        with self.assertRaises(TransferError) as ctx:
+            validate_transfer_architecture(source, target)
+        self.assertIn('policy_input_dim', str(ctx.exception))
+
+    def test_a_checkpoint_predating_the_head_still_validates(self):
+        # movement_phase_head is recorded as False, not omitted, so an old
+        # signature and a new default-path signature compare equal.
+        source = _sig(movement_phase_head=False)
+        target = _sig(movement_phase_head=False)
+        self.assertEqual(validate_transfer_architecture(source, target), [])
 
 
 if __name__ == '__main__':

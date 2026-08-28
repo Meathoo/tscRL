@@ -144,6 +144,7 @@ def build_config(args):
         'agent_embedding_mode': getattr(args, 'agent_embedding_mode', None),
         'colight_adjacency': getattr(args, 'colight_adjacency', None),
         'movement_encoder_enabled': getattr(args, 'movement_encoder_enabled', None),
+        'movement_phase_head': getattr(args, 'movement_phase_head', None),
         'structural_features': getattr(args, 'structural_features', None),
         'hyper_actor_arch': getattr(args, 'hyper_actor_arch', None),
         'actor_hidden1': getattr(args, 'hyper_actor_hidden1', None),

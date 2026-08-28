@@ -62,6 +62,7 @@ class MovementTokenEncoder(nn.Module):
         feedforward_dim=None,
         dropout=0.0,
         static_feature_dim=0,
+        phase_invariant=False,
     ):
         super().__init__()
         dynamic_feature_dim = int(dynamic_feature_dim)
@@ -80,7 +81,25 @@ class MovementTokenEncoder(nn.Module):
 
         # dynamic + phase availability + current phase + current-green +
         # normalized source-lane position + normalized movement position
-        input_dim = dynamic_feature_dim + static_feature_dim + 2 * action_dim + 3
+        #
+        # Two of those blocks are A-wide, which makes every weight in this
+        # encoder a function of the phase count and so untransferable between
+        # networks that signal differently.  phase_invariant replaces them with
+        # two scalars that say the same thing about a movement without indexing
+        # phases: whether the current phase gives it green (already computed as
+        # current_green) and what fraction of this intersection's phases serve
+        # it at all.  Nothing here then depends on A, which is what lets the
+        # permutation-invariant phase head carry across a 4-phase and an
+        # 8-phase network.  See transfer/TRANSFER.md (blocker B4).
+        self.phase_invariant = bool(phase_invariant)
+        if self.phase_invariant:
+            # current_green + serving fraction + the two position scalars
+            input_dim = dynamic_feature_dim + static_feature_dim + 4
+            pooled_dim = 2 * token_dim
+        else:
+            input_dim = dynamic_feature_dim + static_feature_dim + 2 * action_dim + 3
+            pooled_dim = 2 * token_dim + action_dim
+        self.token_dim = token_dim
         self.static_feature_dim = static_feature_dim
         self.input_projection = nn.Sequential(
             nn.Linear(input_dim, token_dim),
@@ -95,7 +114,7 @@ class MovementTokenEncoder(nn.Module):
             ]
         )
         self.output_projection = nn.Sequential(
-            nn.Linear(2 * token_dim + action_dim, output_dim),
+            nn.Linear(pooled_dim, output_dim),
             nn.GELU(),
             nn.LayerNorm(output_dim),
         )
@@ -110,6 +129,7 @@ class MovementTokenEncoder(nn.Module):
         source_position=None,
         movement_position=None,
         static_features=None,
+        return_tokens=False,
     ):
         """
         Args:
@@ -117,8 +137,10 @@ class MovementTokenEncoder(nn.Module):
             token_mask: ``[N, M]`` or ``[B, N, M]`` valid-token mask.
             phase_availability: ``[N, M, A]`` or batched equivalent.
             current_phase: one-hot/soft phase features ``[B, N, A]``.
+            return_tokens: also return the per-movement tokens ``[B, N, M, T]``.
         Returns:
-            Encoded local node states with shape ``[B, N, output_dim]``.
+            Encoded local node states with shape ``[B, N, output_dim]``, and the
+            per-movement tokens as well when ``return_tokens`` is set.
         """
         if dynamic_features.dim() != 4:
             raise ValueError('dynamic_features must have shape [B, N, M, F]')
@@ -178,13 +200,18 @@ class MovementTokenEncoder(nn.Module):
 
         expanded_phase = current_phase.unsqueeze(2).expand(-1, -1, movement_count, -1)
         current_green = (phase_availability * expanded_phase).sum(dim=-1, keepdim=True)
+        if self.phase_invariant:
+            # How much of this intersection's signal plan serves this movement.
+            # A ratio, not a count, so it does not grow with the phase count.
+            serving_fraction = phase_availability.mean(dim=-1, keepdim=True)
+            phase_terms = [current_green, serving_fraction]
+        else:
+            phase_terms = [phase_availability, expanded_phase, current_green]
         token_input = torch.cat(
             [
                 dynamic_features,
                 static_features,
-                phase_availability,
-                expanded_phase,
-                current_green,
+                *phase_terms,
                 _position_feature(source_position),
                 _position_feature(movement_position),
             ],
@@ -202,8 +229,18 @@ class MovementTokenEncoder(nn.Module):
         count = mask.sum(dim=2).clamp_min(1).to(dtype=dtype)
         mean_pool = (tokens * mask).sum(dim=2) / count
         max_pool = tokens.masked_fill(~mask, torch.finfo(dtype).min).max(dim=2).values
-        pooled = torch.cat([mean_pool, max_pool, current_phase], dim=-1)
-        return self.output_projection(pooled)
+        if self.phase_invariant:
+            pooled = torch.cat([mean_pool, max_pool], dim=-1)
+        else:
+            pooled = torch.cat([mean_pool, max_pool, current_phase], dim=-1)
+        node_state = self.output_projection(pooled)
+        if return_tokens:
+            # The phase head scores each phase from the movements it serves, so
+            # it needs the tokens themselves, not the pooled summary.  Padding
+            # is already zeroed above; the caller re-applies token_mask when it
+            # aggregates per phase.
+            return node_state, tokens
+        return node_state
 
 
 class FiLMConditioner(nn.Module):

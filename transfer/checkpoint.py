@@ -135,6 +135,19 @@ def validate_transfer_architecture(expected, actual):
     if expected.get('movement_encoder_enabled') and actual.get('movement_encoder_enabled'):
         node_dependent.add('raw_state_dim')
 
+    # The output half of B4.  action_dim is the widest green-phase count in the
+    # network, and it normally sizes the actor's last layer and two blocks of
+    # the encoder's token input, so a 4-phase checkpoint cannot be poured into
+    # an 8-phase run.  With the phase head on, the actor scores one phase at a
+    # time from that phase's own movements and the encoder's token features
+    # carry no phase index, so nothing that transfers is shaped by the count --
+    # it becomes node-dependent like raw_state_dim.  Again only when both sides
+    # use the head: movement_phase_head is compared strictly below, because one
+    # side scoring phases and the other emitting a fixed logit vector are
+    # different actors rather than differently sized ones.
+    if expected.get('movement_phase_head') and actual.get('movement_phase_head'):
+        node_dependent.add('action_dim')
+
     mismatches = []
     for key in expected:
         if key in node_dependent:
