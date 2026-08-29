@@ -597,6 +597,42 @@ Ingolstadt21 是特徵真的會變的網，這一格先前沒做。做了之後�
 這也讓 (l) 的「需要來源與目標都是異質路網的配對」變成可做的了——B4 已完成（見 (o-3)），
 `4x4 → Ingolstadt21` 與 `Ingolstadt21 → cologne3` 都能載入。
 
+**(r) 與 Unicorn／RESCO 的協定落差（2026-08-29，已開工又暫停）**
+
+查了 [Unicorn](https://github.com/marmotlab/Unicorn)（arXiv 2503.11488）的 `parameters.py` 與論文，
+對照本 repo 在 Ingolstadt21 上的設定。**結論先講：時間窗本來就一模一樣，差的是相位長度與 gamma。**
+
+| | Unicorn／RESCO | 本 repo | 可否用設定對齊 |
+|---|---|---|---|
+| 模擬時長 | 3600 s | 3600 步 | 本來就相同 |
+| 時間窗 | RESCO 慣例 | `sumocfg` 57600→61200 | **本來就完全相同**（16:00–17:00）|
+| 相位長度 | 15 s | `action_interval: 10` | ✅ `--action_interval` |
+| gamma | 0.95 | 0.99（`hyperlight_ppo.yml` 覆蓋 `base.yml` 的 0.95）| ✅ `--gamma` |
+| reward | −(ΣQ_in + ΣQ_out)，進出兩側、取總和 | −mean(Q_in) × 0.05，只有進入側 | ❌ 需改程式 |
+| state | 每 movement 8 維（含 occupancy、outgoing queue）| 每車道 2 維 + 相位 one-hot | ❌ 等於重寫其模型 |
+| 黃燈 | 5 s | **設定值無效，見下** | ❌ 需改程式 |
+
+**⚠️ 一個獨立於本節的 codebase 事實：`yellow_length` 對 SUMO world 是裝飾用的。**
+`world_sumo.Intersection` 取的是 `min(該路口號誌計畫裡各相位的時長)`
+（[world_sumo.py:63](world/world_sumo.py#L63)），也就是**黃燈長度來自 `.net.xml`**，
+不是 `configs/tsc/base.yml` 的 `yellow_length: 5`，也不是 `configs/sim/sumo1x21.cfg` 的 `yellow_length: 3`。
+Ingolstadt21 的 net 檔裡最短相位大多是 3 s。所有 SUMO 結果都是在這個前提下產生的。
+
+`--action_interval` / `--ppo_rollout_steps` / `--gamma` 三個 CLI 覆寫已加（`2013bad`），**保留**——
+它們不是 Unicorn 專用的，是本來就該能從命令列設的協定旋鈕。
+`ppo_rollout_steps` 必須跟著 `action_interval` 一起改：預設 360 = 3600/10 = 一個 episode 一次更新，
+改成相位 15 之後一個 episode 只剩 240 個決策，不跟著改就變成每 1.5 個 episode 才更新一次。
+
+**已暫停**：`uni15`（3 seeds，相位 15／rollout 240／gamma 0.95）2026-08-29 派出後約 45 分鐘停掉，
+**半途輸出已刪除**——它已經寫到 ep50–75 的 checkpoint，留著的話日後重派會被判定為續跑，
+而續跑會打斷 RNG 流（§6.4 第 4 點）。要重啟這條線就是重新派一次，不要沿用舊目錄。
+
+> 讀他們的數字時要記得：Unicorn 論文 Ingolstadt21 的 trip time 是
+> IDQN 380.30／CoLight 381.20／GESA 283.56／Unicorn 247.01，而本 repo 的 `struct` 是
+> best 203.75／tail10 226.47。**這個比較目前不成立**——除了上表三個 ❌ 之外，
+> 他們訓練約 1500 個 episode、評估用 10 個不同 seed 的 episode，本 repo 是 250 / 每評估點 1 個；
+> 而且他們報六個指標，單看 travel time 在完成率不同時有 survivorship 偏誤（見 (m)）。
+
 ### 6.3 執行中 / 待辦
 
 - (a)–(m) 已完成，數字在 §6.2。(j) 的驗證、(k) 的維度掃描、(l) 的遷移測試、(m) 的 CoLight 三層問題都已收尾。
