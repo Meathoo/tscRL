@@ -181,6 +181,8 @@ def build_config(args):
         'hyper_chunk_generator_hidden': getattr(args, 'hyper_chunk_generator_hidden', None),
         'hyper_chunk_rf_mode': getattr(args, 'hyper_chunk_rf_mode', None),
         'agent_embedding_dim': getattr(args, 'agent_embedding_dim', None),
+        'gamma': getattr(args, 'gamma', None),
+        'ppo_rollout_steps': getattr(args, 'ppo_rollout_steps', None),
         'hyper_rf_init': getattr(args, 'hyper_rf_init', None),
         'lr_anneal': getattr(args, 'lr_anneal', None),
         'entropy_anneal': getattr(args, 'entropy_anneal', None),
@@ -207,6 +209,7 @@ def build_config(args):
         'episodes': getattr(args, 'episodes', None),
         'resume_episode': getattr(args, 'resume_episode', None),
         'early_stop_patience': getattr(args, 'early_stop_patience', None),
+        'action_interval': getattr(args, 'action_interval', None),
     }
     for key, value in trainer_overrides.items():
         if value is not None:

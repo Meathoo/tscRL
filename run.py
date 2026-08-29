@@ -190,6 +190,21 @@ parser.add_argument('--early_stop_patience', type=int, default=None,
                     help='override trainer.early_stop_patience; 0 disables early stopping. '
                          'ppo.yml sets 8, so the PPO-family baselines stop far short of the '
                          'episode budget the other methods run')
+parser.add_argument('--action_interval', type=int, default=None,
+                    help='override trainer.action_interval: seconds a chosen phase is held. '
+                         'This is the green/phase duration, and it is what other studies vary '
+                         'when they say "phase duration" -- RESCO and Unicorn use 15, this '
+                         'repo defaults to 10. Changing it changes the decisions per episode '
+                         '(steps / action_interval), so set --ppo_rollout_steps to match or '
+                         'the update cadence moves with it.')
+parser.add_argument('--ppo_rollout_steps', type=int, default=None,
+                    help='override model.ppo_rollout_steps: transitions collected before a PPO '
+                         'update. The default 360 equals 3600/10, i.e. exactly one update per '
+                         'episode at the default action_interval.')
+parser.add_argument('--gamma', type=float, default=None,
+                    help='override model.gamma. base.yml uses 0.95 but hyperlight_ppo.yml sets '
+                         '0.99, so the HyperLight family runs at 0.99 while RESCO-derived work '
+                         'reports 0.95.')
 parser.add_argument('--lr_anneal', type=str, default=None, choices=['none', 'linear'],
                     help='override model.lr_anneal; linear decays the learning rate to '
                          'lr_final_frac across the planned update count')
