@@ -65,6 +65,20 @@ parser.add_argument(
          'full 12-feature contract. The subset changes spec_id(), so a subset '
          'run cannot silently load a full-contract checkpoint.',
 )
+parser.add_argument(
+    '--structural_shrink',
+    type=float,
+    default=None,
+    help='override model.structural_shrink (agent_embedding_mode=structural '
+         'only): pull every structural feature toward this network\'s own mean, '
+         'x -> mean + shrink*(x - mean). 1.0 (the default) is exactly inert; '
+         '0.0 makes every intersection identical, i.e. the constant-meta arm '
+         'with the structural code path. It varies the MAGNITUDE of structural '
+         'variation while holding simulator, city and flow fixed, which no pair '
+         'of networks in the tree does. Shrunk features depend on the loaded '
+         'roadnet, so spec_id() flags them and a shrunk checkpoint cannot be '
+         'used as a transfer source.',
+)
 parser.add_argument('--movement_encoder_enabled', type=str2bool, nargs='?', const=True,
                     default=None,
                     help='override model.movement_encoder_enabled: encode the per-lane '

@@ -114,11 +114,26 @@ def resolve_features(features=None):
     return tuple(ALL_FEATURE_NAMES[i] for i in indices), indices
 
 
-def spec_id(features=None):
+def _shrink_is_identity(shrink):
+    """True when ``shrink`` must leave the features untouched.
+
+    ``shrink`` is an ablation knob, so the default has to be exactly inert:
+    ``mean + 1.0 * (x - mean)`` is not bit-for-bit ``x`` in float32, and every
+    comparison table in this study depends on the default path reproducing to
+    the digit.  The transform is therefore skipped entirely rather than applied
+    with a factor of one.
+    """
+    return shrink is None or float(shrink) == 1.0
+
+
+def spec_id(features=None, shrink=1.0):
     """Stable identifier for the feature contract, stored in checkpoints.
 
     A subset produces a different id from the full contract, which is what stops
-    a 4-feature run from loading a 12-feature checkpoint (and vice versa).
+    a 4-feature run from loading a 12-feature checkpoint (and vice versa).  A
+    shrunk run is flagged the same way, because ``shrink`` makes the features
+    depend on the loaded network and a shrunk checkpoint therefore means
+    something different in a different roadnet.
     """
     names, _ = resolve_features(features)
     # Anything outside the contract is flagged, so a spec string can never be
@@ -128,6 +143,8 @@ def spec_id(features=None):
     tag = f"structural_v{SPEC_VERSION}"
     if any(name in EXTENDED_FEATURE_NAMES for name in names):
         tag += '+ext'
+    if not _shrink_is_identity(shrink):
+        tag += '+shrink%g' % float(shrink)
     return tag + ':' + ','.join(names)
 
 
@@ -178,7 +195,7 @@ def _neighbour_sets(intersections):
 
 
 def build_structural_features(intersections, *, lanes_for_road, features=None,
-                              contracted_degrees=None):
+                              contracted_degrees=None, shrink=1.0):
     """Build ``[n_intersections, FEATURE_DIM]`` network-independent features.
 
     ``lanes_for_road(inter, road)`` is passed in as a callable -- the agent's
@@ -254,6 +271,28 @@ def build_structural_features(intersections, *, lanes_for_road, features=None,
     if len(indices) != raw.shape[1]:
         scaled = scaled[:, indices]
         raw = raw[:, indices]
+
+    # ``shrink`` pulls every column toward this network's own mean:
+    #   x' = mean + shrink * (x - mean)
+    # so the ordering and the centre of each feature are kept and only the
+    # spread changes.  It exists to answer one question the networks in the tree
+    # cannot: conditioning is worth ~43s on Ingolstadt21 (in_lane 4-14) and
+    # nothing on cityflow4x4_hetero (in_lane 9-12), and those two differ in the
+    # magnitude of the variation as well as in simulator, city and flow.
+    # Shrinking Ingolstadt's own features down to the narrower spread varies the
+    # magnitude alone.
+    #
+    # This deliberately makes the features depend on the loaded roadnet, which
+    # is exactly what the rest of the module refuses to do -- hence the spec_id
+    # flag, so a shrunk checkpoint can never load into a full-contract run.
+    # Use it for within-network ablations only, never as a transfer source.
+    if not _shrink_is_identity(shrink):
+        factor = float(shrink)
+        if factor < 0.0:
+            raise ValueError('structural shrink must be >= 0, got %r' % (shrink,))
+        column_mean = scaled.mean(axis=0, keepdims=True)
+        scaled = (column_mean + factor * (scaled - column_mean)).astype(np.float32)
+
     return scaled, list(names), raw
 
 

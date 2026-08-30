@@ -480,6 +480,10 @@ class HyperLightPPOAgent(RLAgent):
         self.structural_features = (
             str(raw_feature_sel) if raw_feature_sel not in (None, '', 'all') else None
         )
+        # 1.0 leaves the features untouched; below 1.0 pulls them toward this
+        # network's own mean, which is the only way to vary the *magnitude* of
+        # structural variation without also changing simulator, city and flow.
+        self.structural_shrink = float(cfg.get('structural_shrink', 1.0) or 1.0)
         if self.topology_aware_embedding:
             if self.embedding_mode == 'constant':
                 topology_features = np.ones((len(self.world.intersections), 1),
@@ -497,8 +501,10 @@ class HyperLightPPOAgent(RLAgent):
                     lanes_for_road=self._lanes_for_road,
                     features=self.structural_features,
                     contracted_degrees=self._contracted_degrees(),
+                    shrink=self.structural_shrink,
                 )
-                self.structural_spec = structural_spec_id(self.structural_features)
+                self.structural_spec = structural_spec_id(
+                    self.structural_features, shrink=self.structural_shrink)
             else:
                 topology_features, self.topology_feature_names = self._build_topology_features()
             self.registered_topology_features = torch.tensor(

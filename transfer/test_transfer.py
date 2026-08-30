@@ -365,5 +365,58 @@ class StructuralFeatureSubsetTests(unittest.TestCase):
                 resolve_features(bad)
 
 
+class StructuralShrinkTests(unittest.TestCase):
+    """``shrink`` scales the spread of the features and nothing else."""
+
+    def _build(self, shrink):
+        return build_structural_features(
+            _network(3),
+            lanes_for_road=lambda inter, road: list(road.get('lanes', [])),
+            shrink=shrink,
+        )
+
+    def test_default_is_bit_for_bit_the_untouched_build(self):
+        # Every comparison table in the study is against runs made before this
+        # knob existed, so shrink=1.0 must not perturb a single bit.
+        baseline, _, _ = _features(_network(3))
+        for inert in (1.0, 1, None):
+            scaled, _, _ = self._build(inert)
+            np.testing.assert_array_equal(scaled, baseline)
+
+    def test_default_spec_id_is_unchanged(self):
+        self.assertEqual(spec_id(shrink=1.0), spec_id())
+        self.assertEqual(spec_id(shrink=None), spec_id())
+
+    def test_shrunk_spec_id_is_flagged_so_it_cannot_load_a_full_checkpoint(self):
+        self.assertNotEqual(spec_id(shrink=0.5), spec_id())
+        self.assertTrue(spec_id(shrink=0.5).startswith('structural_v1+shrink0.5:'))
+
+    def test_zero_makes_every_intersection_identical(self):
+        scaled, _, _ = self._build(0.0)
+        np.testing.assert_allclose(scaled, scaled[0:1].repeat(scaled.shape[0], axis=0))
+
+    def test_mean_is_held_and_spread_scales_linearly(self):
+        baseline, _, _ = _features(_network(3))
+        half, _, _ = self._build(0.5)
+        np.testing.assert_allclose(
+            half.mean(axis=0), baseline.mean(axis=0), rtol=1e-5, atol=1e-6)
+        spread = np.abs(baseline - baseline.mean(axis=0)).sum(axis=0)
+        self.assertGreater(spread.sum(), 0.0)  # the stub network must actually vary
+        np.testing.assert_allclose(
+            np.abs(half - half.mean(axis=0)).sum(axis=0), 0.5 * spread,
+            rtol=1e-5, atol=1e-6)
+
+    def test_raw_features_are_never_shrunk(self):
+        # `raw` is what the architecture summary prints, and a shrunk run should
+        # still report the physical quantities the roadnet actually has.
+        _, _, baseline_raw = _features(_network(3))
+        _, _, raw = self._build(0.25)
+        np.testing.assert_array_equal(raw, baseline_raw)
+
+    def test_negative_shrink_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._build(-0.5)
+
+
 if __name__ == '__main__':
     unittest.main()

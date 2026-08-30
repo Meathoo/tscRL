@@ -146,6 +146,7 @@ def build_config(args):
         'movement_encoder_enabled': getattr(args, 'movement_encoder_enabled', None),
         'movement_phase_head': getattr(args, 'movement_phase_head', None),
         'structural_features': getattr(args, 'structural_features', None),
+        'structural_shrink': getattr(args, 'structural_shrink', None),
         'hyper_actor_arch': getattr(args, 'hyper_actor_arch', None),
         'actor_hidden1': getattr(args, 'hyper_actor_hidden1', None),
         'actor_hidden2': getattr(args, 'hyper_actor_hidden2', None),
