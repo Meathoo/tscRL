@@ -143,6 +143,11 @@ def build_config(args):
     model_overrides = {
         'agent_embedding_mode': getattr(args, 'agent_embedding_mode', None),
         'colight_adjacency': getattr(args, 'colight_adjacency', None),
+        'colight_obs_norm': getattr(args, 'colight_obs_norm', None),
+        'colight_phase_hist': getattr(args, 'colight_phase_hist', None),
+        # model.phase is the config key; the flag is named for CoLight because
+        # that is the only agent whose phase input this study varies.
+        'phase': getattr(args, 'colight_phase', None),
         'movement_encoder_enabled': getattr(args, 'movement_encoder_enabled', None),
         'movement_phase_head': getattr(args, 'movement_phase_head', None),
         'structural_features': getattr(args, 'structural_features', None),

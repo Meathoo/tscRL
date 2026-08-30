@@ -100,6 +100,23 @@ parser.add_argument('--colight_adjacency', type=str, default=None,
                          'neighbours. road = one road joins them (default, and what '
                          'existing results used); contracted = a path joins them through '
                          'junctions carrying no signal. Identical on the CityFlow grids.')
+parser.add_argument('--colight_obs_norm', type=str, default=None,
+                    choices=['fixed', 'capacity'],
+                    help='override model.colight_obs_norm: CoLight divides its lane '
+                         'counts by vehicle_max (1 in colight.yml, i.e. no normalisation '
+                         'at all). "capacity" divides by each lane own storage instead, '
+                         'so a reading means the same on a short and a long approach. '
+                         'Identical in effect on networks with uniform lane lengths.')
+parser.add_argument('--colight_phase', type=str2bool, nargs='?', const=True, default=None,
+                    help='override model.phase for CoLight: feed the current phase into '
+                         'the shared network. It was accepted by get_action and dropped, '
+                         'so it has never reached the model. Matters only where phase '
+                         'index k means different movements at different intersections.')
+parser.add_argument('--colight_phase_hist', type=str2bool, nargs='?', const=True, default=None,
+                    help='print, at exit, how each intersection distributes its greedy '
+                         'test-time decisions over its phases. Separates a policy that '
+                         'has collapsed onto one phase per intersection from one that is '
+                         'merely mediocre; the travel-time column cannot tell them apart.')
 parser.add_argument('--hypernet_type', type=str, default=None, choices=['mlp', 'linear'],
                     help='override model hypernetwork type')
 parser.add_argument('--hyper_actor_arch', type=str, default=None, choices=['mlp', 'iru'],

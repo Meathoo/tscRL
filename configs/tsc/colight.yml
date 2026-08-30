@@ -10,6 +10,9 @@ model:
   # `road` is what every existing result used; `contracted` only differs on
   # networks where signals are linked through unsignalised junctions.
   colight_adjacency: road
+  # fixed | capacity -- fixed divides lane counts by vehicle_max below, which
+  # at 1 means no normalisation.  See --colight_obs_norm.
+  colight_obs_norm: fixed
   vehicle_max: 1
   epsilon: 0.8
   epsilon_decay: 0.9995

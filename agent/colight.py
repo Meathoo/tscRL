@@ -2,12 +2,18 @@ from . import RLAgent
 from common.registry import Registry
 import numpy as np
 import os
+import atexit
 import random
 from collections import OrderedDict, deque
 import gym
 
 from generator.lane_vehicle import LaneVehicleGenerator
 from generator.intersection_phase import IntersectionPhaseGenerator
+from transfer.observation import (
+    build_divisors as build_observation_divisors,
+    summarize as summarize_capacity,
+    DEFAULT_CLIP as OBS_CAPACITY_CLIP,
+)
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -115,14 +121,54 @@ class CoLightAgent(RLAgent):
         self.phase_lengths = np.array([len(i.phases) for i in self.world.intersections])
         self.action_space = gym.spaces.Discrete(max(self.phase_lengths))
         min_ob_length = max([ob[1].ob_length for ob in self.ob_generator])
+        # The lane block is padded to one common width and every other block is
+        # appended after it.  Padding straight out to ob_length instead would
+        # leave the phase block at a different offset for each intersection --
+        # the one misalignment a shared network cannot undo, since it receives
+        # no per-intersection identity input.
+        self.lane_dim = int(min_ob_length)
         if self.phase:
-            # TODO: irregular ob and phase in the future
             if self.one_hot:
-                self.ob_length = min_ob_length + len(self.world.intersections[0].phases)
+                # max(phase_lengths), not intersections[0].phases: on a
+                # heterogeneous network the first intersection is not the
+                # widest, so a one-hot sized from it silently truncates the
+                # phase of every intersection that has more.  On the CityFlow
+                # grids the two are equal and this changes nothing.
+                self.phase_dim = int(self.phase_lengths.max())
             else:
-                self.ob_length = min_ob_length + 1
+                self.phase_dim = 1
         else:
-            self.ob_length = min_ob_length
+            self.phase_dim = 0
+        self.ob_length = self.lane_dim + self.phase_dim
+
+        # Capacity normalisation, as ported for HyperLight in
+        # transfer/observation.py: divide each lane's count by what that lane
+        # can physically hold rather than by one global constant.  vehicle_max
+        # is 1 in colight.yml, i.e. the observation is a raw vehicle count, so
+        # on a network whose lanes differ in length the same input value means
+        # different things at different intersections -- again something a
+        # shared network with no identity input cannot separate.
+        self.obs_norm_mode = str(Registry.mapping['model_mapping']['setting'].param.get(
+            'colight_obs_norm', 'fixed')).lower()
+        if self.obs_norm_mode not in ('fixed', 'capacity'):
+            raise ValueError(f'Unknown colight_obs_norm: {self.obs_norm_mode}')
+        self.obs_divisors = None
+        if self.obs_norm_mode == 'capacity':
+            fallback = float(Registry.mapping['model_mapping']['setting'].param['vehicle_max'])
+            divisors, resolved_total, missing_total = [], 0, 0
+            for _, ob_gen in self.ob_generator:
+                lane_ids = [lane for road_lanes in ob_gen.lanes for lane in road_lanes]
+                node_divisors, resolved, missing = build_observation_divisors(
+                    self.world, lane_ids, self.lane_dim, 1, fallback=fallback)
+                divisors.append(node_divisors)
+                resolved_total += resolved
+                missing_total += missing
+            self.obs_divisors = np.stack(divisors).astype(np.float32)
+            note = summarize_capacity(divisors)
+            if missing_total:
+                note += (f' [{missing_total}/{resolved_total + missing_total} lanes had '
+                         f'no length; fell back to vehicle_max]')
+            print(f'[colight] {note}', flush=True)
 
         self.get_attention = Registry.mapping['logger_mapping']['setting'].param['attention']
         # train parameters
@@ -135,6 +181,16 @@ class CoLightAgent(RLAgent):
         self.learning_rate = Registry.mapping['model_mapping']['setting'].param['learning_rate']
         self.vehicle_max = Registry.mapping['model_mapping']['setting'].param['vehicle_max']
         self.batch_size = Registry.mapping['model_mapping']['setting'].param['batch_size']
+
+        # Diagnostic: which phase each intersection actually selects while
+        # acting greedily.  A shared head that has collapsed onto one phase per
+        # intersection looks the same in the travel-time column as a policy that
+        # is merely mediocre, and the two call for different fixes.
+        self.log_phase_hist = bool(Registry.mapping['model_mapping']['setting'].param.get(
+            'colight_phase_hist', False))
+        self.phase_hist = np.zeros((self.sub_agents, int(self.action_space.n)), dtype=np.int64)
+        if self.log_phase_hist:
+            atexit.register(self.report_phase_hist)
 
         self.model = self._build_model()
         self.target_model = self._build_model()
@@ -233,11 +289,40 @@ class CoLightAgent(RLAgent):
         x_obs = []  # sub_agents * lane_nums,
         for i in range(len(self.ob_generator)):
             ob = self.ob_generator[i][1].generate()/ self.vehicle_max
-            ob = np.pad(ob, (0, self.ob_length - ob.shape[-1] ))
+            ob = np.pad(ob, (0, self.lane_dim - ob.shape[-1] ))
+            if self.obs_divisors is not None:
+                ob = np.clip(ob / self.obs_divisors[i], 0.0, OBS_CAPACITY_CLIP)
             x_obs.append(ob)
-            
+
         x_obs = np.array(x_obs, dtype=np.float32)
         return x_obs
+
+    def _with_phase(self, ob, phase):
+        """Append the current-phase block to a [agents, lane_dim] observation.
+
+        ``get_action`` was handed ``phase`` and threw it away (the old
+        ``# TODO: not phase not used``), so the network never saw which phase it
+        was currently running.  On the CityFlow grids that is survivable: every
+        intersection shares one 4-phase convention, so phase index k means the
+        same movement everywhere and the lane counts alone carry most of the
+        state.  On a network with unequal phase counts index k means a different
+        movement at each intersection, and without this block the shared network
+        is asked to choose a phase without knowing which one is running.
+        """
+        if self.phase_dim == 0:
+            return ob
+        ob = np.asarray(ob, dtype=np.float32)
+        phase = np.asarray(phase).reshape(-1).astype(np.int64)
+        if self.one_hot:
+            block = np.zeros((ob.shape[0], self.phase_dim), dtype=np.float32)
+            # Clip rather than trust the index: a phase id at or beyond that
+            # intersection's phase count would otherwise write out of bounds.
+            idx = np.clip(phase, 0, self.phase_dim - 1)
+            block[np.arange(ob.shape[0]), idx] = 1.0
+        else:
+            block = (phase / np.maximum(self.phase_lengths - 1, 1)).astype(
+                np.float32).reshape(-1, 1)
+        return np.concatenate([ob, block], axis=-1)
 
     def get_reward(self):
         # TODO: test output
@@ -264,7 +349,7 @@ class CoLightAgent(RLAgent):
         queue = []
         for item in self.queue:
             item = item[1].generate()
-            item = np.pad(item, (0, self.ob_length - item.shape[-1]))
+            item = np.pad(item, (0, self.lane_dim - item.shape[-1]))
             queue.append(item)
             
         tmp_queue = np.squeeze(np.array(queue, dtype=np.float32))
@@ -290,10 +375,9 @@ class CoLightAgent(RLAgent):
         if not test:
             if np.random.rand() <= self.epsilon:
                 return self.sample()
-        observation = torch.tensor(ob, dtype=torch.float32)
+        observation = torch.tensor(self._with_phase(ob, phase), dtype=torch.float32)
         edge = self.edge_idx
         dp = Data(x=observation, edge_index=edge)
-        # TODO: not phase not used
 
         if self.get_attention:
             # TODO: collect attention matrix later
@@ -305,7 +389,7 @@ class CoLightAgent(RLAgent):
             for action_vec, phase_length in zip(actions, self.phase_lengths):
                 action_list.append(np.argmax(action_vec[0:phase_length]))
             # action = np.clip(action, 0, self.phase_lengths - 1)
-            action = np.array(action_list)
+            action = self._record_phase_hist(np.array(action_list), test)
             # action = np.clip(action, 0, self.phase_lengths - 1)
             return action, att  # [batch, agents], [batch, agents, nv, neighbor]
         else:
@@ -316,9 +400,40 @@ class CoLightAgent(RLAgent):
             for action_vec, phase_length in zip(actions, self.phase_lengths):
                 action_list.append(np.argmax(action_vec[0:phase_length]))
             # action = np.clip(action, 0, self.phase_lengths - 1)
-            action = np.array(action_list)
+            action = self._record_phase_hist(np.array(action_list), test)
             
             return action  # [batch, agents] TODO: check here
+
+    def _record_phase_hist(self, action, test):
+        """Count greedy phase choices per intersection; returns action unchanged.
+
+        Only test-time actions are counted: during training epsilon starts at
+        0.8, so a training histogram mostly measures the exploration schedule.
+        """
+        if self.log_phase_hist and test:
+            np.add.at(self.phase_hist, (np.arange(action.shape[0]), action), 1)
+        return action
+
+    def report_phase_hist(self):
+        """Print the per-intersection phase distribution collected so far."""
+        totals = self.phase_hist.sum(axis=1)
+        if not totals.any():
+            return
+        print('[colight] greedy phase distribution per intersection '
+              '(share of test-time decisions):', flush=True)
+        collapsed = 0
+        for idx, inter in enumerate(self.world.intersections):
+            total = totals[idx]
+            if total == 0:
+                continue
+            n_phases = int(self.phase_lengths[idx])
+            shares = self.phase_hist[idx, :n_phases] / float(total)
+            if shares.max() > 0.95:
+                collapsed += 1
+            body = ' '.join(f'{share:.2f}' for share in shares)
+            print(f'[colight]   {inter.id:<20s} n={n_phases}  {body}', flush=True)
+        print(f'[colight] {collapsed}/{len(totals)} intersections spend >95% of '
+              f'their decisions in a single phase', flush=True)
 
     def sample(self):
         action = np.random.randint(0, self.action_space.n, self.sub_agents)
@@ -341,10 +456,13 @@ class CoLightAgent(RLAgent):
         rewards = []
         for item in samples:
             dp = item[1]
-            state = torch.tensor(dp[0], dtype=torch.float32)
+            # dp[1] / dp[5] are the phases stored by remember(); they were kept
+            # in the buffer but never used, so the replayed input has to be
+            # rebuilt the same way get_action builds the acting input.
+            state = torch.tensor(self._with_phase(dp[0], dp[1]), dtype=torch.float32)
             batch_list.append(Data(x=state, edge_index=self.edge_idx))
 
-            state_p = torch.tensor(dp[4], dtype=torch.float32)
+            state_p = torch.tensor(self._with_phase(dp[4], dp[5]), dtype=torch.float32)
             batch_list_p.append(Data(x=state_p, edge_index=self.edge_idx))
             rewards.append(dp[3])
             actions.append(dp[2])
