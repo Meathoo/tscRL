@@ -145,6 +145,7 @@ def build_config(args):
         'colight_adjacency': getattr(args, 'colight_adjacency', None),
         'colight_obs_norm': getattr(args, 'colight_obs_norm', None),
         'colight_phase_hist': getattr(args, 'colight_phase_hist', None),
+        'load_model': getattr(args, 'load_model', None),
         # model.phase is the config key; the flag is named for CoLight because
         # that is the only agent whose phase input this study varies.
         'phase': getattr(args, 'colight_phase', None),

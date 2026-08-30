@@ -112,6 +112,12 @@ parser.add_argument('--colight_phase', type=str2bool, nargs='?', const=True, def
                          'the shared network. It was accepted by get_action and dropped, '
                          'so it has never reached the model. Matters only where phase '
                          'index k means different movements at different intersections.')
+parser.add_argument('--load_model', type=str2bool, nargs='?', const=True, default=None,
+                    help='override model.load_model; with --train_model False this is what '
+                         'makes task.py load the saved best checkpoint before testing. '
+                         'Without it an evaluation-only run silently scores a freshly '
+                         'initialised network. Agents that take --transfer_checkpoint '
+                         'load their weights at construction and do not need this.')
 parser.add_argument('--colight_phase_hist', type=str2bool, nargs='?', const=True, default=None,
                     help='print, at exit, how each intersection distributes its greedy '
                          'test-time decisions over its phases. Separates a policy that '
