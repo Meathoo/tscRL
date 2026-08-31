@@ -49,6 +49,16 @@ def patch(src, dst, env_expr, model_var, agent_dim_expr, log):
     text = text.replace('from runner_heterolight import Runner',
                         'from runner_hyperlight import Runner')
 
+    # Their driver hardcodes seed 0, so three runs of the same arm would be three
+    # copies of one trajectory. Every arm still starts from the same seed as
+    # every other arm at the same index, which is what makes the comparison
+    # paired rather than just repeated.
+    text = text.replace('    random.seed(0)\n    np.random.seed(0)\n    torch.manual_seed(0)',
+                        "    _seed = int(os.environ.get('HYPER_SEED', 0))\n"
+                        '    random.seed(_seed)\n'
+                        '    np.random.seed(_seed)\n'
+                        '    torch.manual_seed(_seed)')
+
     # The construction call spans four lines and differs only in indentation and
     # argument expressions between the two files, so match it structurally.
     pattern = re.compile(

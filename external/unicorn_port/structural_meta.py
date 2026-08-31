@@ -54,18 +54,68 @@ def _edge_count(lane_list):
     return len(edges)
 
 
-def raw_features_for(tls):
-    """The twelve physical quantities for one Unicorn ``Tls``, unscaled."""
+def _edges(lane_list):
+    """The set of approaches behind a lane list."""
+    edges = set()
+    for lane in lane_list or ():
+        lane = str(lane)
+        edges.add(lane.rsplit('_', 1)[0] if '_' in lane else lane)
+    return edges
+
+
+def neighbour_counts(env):
+    """How many other signals each one shares a road with, in ``env.tls_list`` order.
+
+    Unicorn's map config carries ``neighbor_list: None`` for every signal on
+    ingolstadt21, so reading it straight gives a column of zeros and silently
+    drops two of the twelve features. Deriving adjacency instead keeps the
+    contract whole and uses the same rule our own ``_neighbour_sets`` does: two
+    signals are neighbours when one's outgoing road is the other's incoming
+    road.
+
+    Expect a small number on ingolstadt21 either way. Unsignalised nodes sit
+    between most signal pairs there, so direct road-sharing is rare -- our own
+    harness reports neighbor_count[0/0.38/2] on the same map, and that is what
+    motivated the contracted-adjacency experiment. Agreement with that number is
+    the check that this is a faithful port rather than a repair.
+    """
+    tls_ids = list(env.tls_list)
+    incoming = {}
+    outgoing = {}
+    for tls_id in tls_ids:
+        tls = env.tls_dict[tls_id]
+        incoming[tls_id] = _edges(getattr(tls, 'incoming_lane_list', None))
+        outgoing[tls_id] = _edges(getattr(tls, 'outgoing_lane_list', None))
+
+    counts = {}
+    for tls_id in tls_ids:
+        found = set()
+        for other in tls_ids:
+            if other == tls_id:
+                continue
+            if outgoing[tls_id] & incoming[other] or outgoing[other] & incoming[tls_id]:
+                found.add(other)
+        counts[tls_id] = float(len(found))
+    return counts
+
+
+def raw_features_for(tls, neighbor_count=None):
+    """The twelve physical quantities for one Unicorn ``Tls``, unscaled.
+
+    ``neighbor_count`` is passed in because adjacency is a property of the whole
+    network, not of one signal; see ``neighbour_counts``.
+    """
     in_lanes = list(getattr(tls, 'incoming_lane_list', None) or ())
     out_lanes = list(getattr(tls, 'outgoing_lane_list', None) or ())
-    neighbours = list(getattr(tls, 'neighbor_list', None) or ())
     phases = list(getattr(tls, 'action_space', None) or ())
 
     in_lane_count = float(len(in_lanes))
     out_lane_count = float(len(out_lanes))
     in_degree = float(_edge_count(in_lanes))
     out_degree = float(_edge_count(out_lanes))
-    neighbor_count = float(len(neighbours))
+    if neighbor_count is None:
+        neighbor_count = float(len(getattr(tls, 'neighbor_list', None) or ()))
+    neighbor_count = float(neighbor_count)
     # max(1, ...) mirrors our version: a signal with no programme still has one
     # thing it can do, and a zero here would divide the scaled feature away.
     phase_count = float(max(1, len(phases)))
@@ -99,7 +149,9 @@ def build_meta_table(env, shrink=1.0):
     skipped rather than applied, because ``mean + 1.0*(x - mean)`` is not
     bit-for-bit ``x`` in float32.
     """
-    rows = [raw_features_for(env.tls_dict[tls]) for tls in env.tls_list]
+    counts = neighbour_counts(env)
+    rows = [raw_features_for(env.tls_dict[tls], neighbor_count=counts[tls])
+            for tls in env.tls_list]
     raw = np.stack(rows, axis=0)
     scaled = (raw / _SCALES).astype(np.float32)
     if shrink is not None and float(shrink) != 1.0:

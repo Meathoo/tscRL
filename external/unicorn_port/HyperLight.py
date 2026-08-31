@@ -117,36 +117,61 @@ class GeneratedHead(nn.Module):
 
     Replaces ``nn.Sequential(Linear(in, hid), ReLU, Linear(hid, 1))`` -- the
     ``policy_layer`` / ``value_layer`` of HeteroLight -- with the same shapes,
-    generated. Both layers are generated rather than only the last: our own
-    sweep found that generating the whole head is what carries the effect, and
-    that bounded modulation of a shared head (FiLM) is weaker than not
-    conditioning at all.
+    generated. The generator is initialised small so that at step 0 the
+    generated head is close to a plain init rather than to noise scaled by the
+    code's magnitude.
 
-    The generator is initialised small so that at step 0 the generated head is
-    close to a plain init rather than to noise scaled by the code's magnitude.
+    ``scope`` decides how much of the head is generated:
+
+    ``'last'`` (default) generates only the final ``hidden -> out`` vector and
+    keeps the first layer shared. The generator then emits 257 numbers instead
+    of 38,145, which matters twice over. It keeps the arm within ~11% of
+    HeteroLight's parameter count, so "generated head beats shared head" cannot
+    be answered with "you gave it 16x the parameters"; and it keeps the PPO
+    update affordable -- at ``scope='all'`` with ``hyper_hidden=128`` the model
+    is 10.5M parameters against HeteroLight's 630k, and a round of six episodes
+    spends four minutes in the update against twenty seconds in the rollout.
+
+    ``'all'`` generates both layers, which is the shape our own study found
+    carries the effect on a much smaller target layer. It is kept because that
+    is the arm our tables were built from, not because it is affordable here.
     """
 
-    def __init__(self, code_dim, in_dim, hidden_dim, out_dim=1, hyper_hidden=128):
+    def __init__(self, code_dim, in_dim, hidden_dim, out_dim=1, hyper_hidden=128,
+                 scope='last'):
         super().__init__()
         self.in_dim = int(in_dim)
         self.hidden_dim = int(hidden_dim)
         self.out_dim = int(out_dim)
+        if scope not in ('last', 'all'):
+            raise ValueError('unknown hyper scope: %r' % (scope,))
+        self.scope = scope
 
         self.trunk = nn.Sequential(
             nn.Linear(code_dim, hyper_hidden),
             nn.ReLU(),
         )
-        self.w1 = nn.Linear(hyper_hidden, self.in_dim * self.hidden_dim)
-        self.b1 = nn.Linear(hyper_hidden, self.hidden_dim)
+        if scope == 'all':
+            self.w1 = nn.Linear(hyper_hidden, self.in_dim * self.hidden_dim)
+            self.b1 = nn.Linear(hyper_hidden, self.hidden_dim)
+            self.shared_first = None
+        else:
+            self.w1 = self.b1 = None
+            self.shared_first = nn.Linear(self.in_dim, self.hidden_dim)
         self.w2 = nn.Linear(hyper_hidden, self.hidden_dim * self.out_dim)
         self.b2 = nn.Linear(hyper_hidden, self.out_dim)
 
         # Fan-in calibrated: the generated matrices should start at the scale a
         # normally initialised Linear would, not at the generator's own scale.
-        for layer, fan_in in ((self.w1, self.in_dim), (self.w2, self.hidden_dim)):
+        generated = [(self.w2, self.hidden_dim)]
+        if scope == 'all':
+            generated.append((self.w1, self.in_dim))
+        for layer, fan_in in generated:
             nn.init.uniform_(layer.weight, -1e-3, 1e-3)
             nn.init.uniform_(layer.bias, -(fan_in ** -0.5), fan_in ** -0.5)
         for layer in (self.b1, self.b2):
+            if layer is None:
+                continue
             nn.init.uniform_(layer.weight, -1e-3, 1e-3)
             nn.init.zeros_(layer.bias)
 
@@ -165,21 +190,25 @@ class GeneratedHead(nn.Module):
             raise ValueError('leading dim %d is not a multiple of %d agents' % (lead, n_agents))
         batch = lead // n_agents
 
-        w1 = self.w1(h).view(n_agents, self.in_dim, self.hidden_dim)
-        b1 = self.b1(h).view(n_agents, 1, self.hidden_dim)
         w2 = self.w2(h).view(n_agents, self.hidden_dim, self.out_dim)
         b2 = self.b2(h).view(n_agents, 1, self.out_dim)
         if batch > 1:
-            w1 = w1.repeat(batch, 1, 1)
-            b1 = b1.repeat(batch, 1, 1)
             w2 = w2.repeat(batch, 1, 1)
             b2 = b2.repeat(batch, 1, 1)
 
-        hidden = F.relu(torch.baddbmm(b1, x, w1))
+        if self.scope == 'all':
+            w1 = self.w1(h).view(n_agents, self.in_dim, self.hidden_dim)
+            b1 = self.b1(h).view(n_agents, 1, self.hidden_dim)
+            if batch > 1:
+                w1 = w1.repeat(batch, 1, 1)
+                b1 = b1.repeat(batch, 1, 1)
+            hidden = F.relu(torch.baddbmm(b1, x, w1))
+        else:
+            hidden = F.relu(self.shared_first(x))
         return torch.baddbmm(b2, hidden, w2)
 
 
-def _swap_head(net, code_dim, hyper_hidden, attr):
+def _swap_head(net, code_dim, hyper_hidden, attr, scope):
     """Replace ``net.<attr>`` with a GeneratedHead of identical shapes."""
     seq = getattr(net, attr)
     first, last = seq[0], seq[2]
@@ -187,7 +216,8 @@ def _swap_head(net, code_dim, hyper_hidden, attr):
                          in_dim=first.in_features,
                          hidden_dim=first.out_features,
                          out_dim=last.out_features,
-                         hyper_hidden=hyper_hidden)
+                         hyper_hidden=hyper_hidden,
+                         scope=scope)
     setattr(net, attr, nn.Identity())  # keep the attribute a Module, unused
     return head
 
@@ -195,9 +225,9 @@ def _swap_head(net, code_dim, hyper_hidden, attr):
 class HyperActorNet(ActorNet):
     """ActorNet with ``policy_layer`` generated. Everything else is inherited."""
 
-    def __init__(self, *args, code_dim=16, hyper_hidden=128, **kwargs):
+    def __init__(self, *args, code_dim=16, hyper_hidden=128, scope='last', **kwargs):
         super().__init__(*args, **kwargs)
-        self.generated_policy = _swap_head(self, code_dim, hyper_hidden, 'policy_layer')
+        self.generated_policy = _swap_head(self, code_dim, hyper_hidden, 'policy_layer', scope)
 
     def forward(self, state, phase_vector, int_vector, mask, h_n, num_meta, code=None):
         # Deliberately a copy of ActorNet.forward with two lines changed, rather
@@ -247,9 +277,9 @@ class HyperActorNet(ActorNet):
 class HyperCriticNet(CriticNet):
     """CriticNet with ``value_layer`` generated."""
 
-    def __init__(self, *args, code_dim=16, hyper_hidden=128, **kwargs):
+    def __init__(self, *args, code_dim=16, hyper_hidden=128, scope='last', **kwargs):
         super().__init__(*args, **kwargs)
-        self.generated_value = _swap_head(self, code_dim, hyper_hidden, 'value_layer')
+        self.generated_value = _swap_head(self, code_dim, hyper_hidden, 'value_layer', scope)
 
     def forward(self, state, phase_vector, int_vector, mask, h_n, num_meta, code=None):
         state = state.reshape(-1, self.agent_dim * num_meta, self.flat_dim)
@@ -302,7 +332,7 @@ class HyperLight(nn.Module):
 
     def __init__(self, input_dim, agent_dim, int_vec_dim, actor_lr, critic_lr,
                  meta_table=None, meta_mode='structural', code_dim=16,
-                 hyper_hidden=128):
+                 hyper_hidden=128, hyper_scope='last'):
         super().__init__()
         self.input_dim = input_dim
         self.agent_dim = agent_dim
@@ -314,10 +344,12 @@ class HyperLight(nn.Module):
                                         code_dim=code_dim)
         self.actor_network = HyperActorNet(input_dim=input_dim, agent_dim=agent_dim,
                                            int_vec_dim=int_vec_dim,
-                                           code_dim=code_dim, hyper_hidden=hyper_hidden)
+                                           code_dim=code_dim, hyper_hidden=hyper_hidden,
+                                           scope=hyper_scope)
         self.critic_network = HyperCriticNet(input_dim=input_dim, agent_dim=agent_dim,
                                              int_vec_dim=int_vec_dim,
-                                             code_dim=code_dim, hyper_hidden=hyper_hidden)
+                                             code_dim=code_dim, hyper_hidden=hyper_hidden,
+                                           scope=hyper_scope)
 
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
