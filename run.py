@@ -94,6 +94,20 @@ parser.add_argument('--movement_phase_head', type=str2bool, nargs='?', const=Tru
                          'shape, which is what lets a checkpoint cross networks that signal '
                          'differently (blocker B4, output half). Requires '
                          '--movement_encoder_enabled.')
+parser.add_argument('--sumo_teleport_time', type=int, default=None,
+                    help='pass --time-to-teleport to SUMO. Omitted by default, so '
+                         'SUMO applies its own default of 300s -- which is what every '
+                         'result in this repo was produced under. RESCO-derived work '
+                         'disables teleporting (-1); Unicorn uses -1 for RESCO maps, '
+                         '300 for MA2C/SG and 600 for GESA. Teleporting removes stuck '
+                         'vehicles, so it moves the mean travel time and the completed '
+                         'vehicle count together. SUMO world only.')
+parser.add_argument('--sumo_yellow_length', type=float, default=None,
+                    help='override the yellow phase length. By default it is read from '
+                         'the .net.xml (the shortest phase in the signal\'s own '
+                         'programme, mostly 3s on Ingolstadt21) and the yellow_length '
+                         'keys in configs/ have never had any effect. RESCO and Unicorn '
+                         'use 5. SUMO world only.')
 parser.add_argument('--colight_adjacency', type=str, default=None,
                     choices=['road', 'contracted'],
                     help='override model.colight_adjacency: how two signals count as '

@@ -60,7 +60,16 @@ class Intersection(object):
         self.next_phase = 0
         self.current_phase_time = 0
 
+        # Yellow comes from the .net.xml -- the shortest phase in the signal's
+        # own programme, which on Ingolstadt21 is mostly 3s. The `yellow_length`
+        # key in configs/sim/*.cfg and configs/tsc/base.yml has never reached
+        # this line and does not now either, so every SUMO result in the study
+        # was produced with the net's own value. --sumo_yellow_length overrides
+        # it for protocol-matching runs only (RESCO and Unicorn use 5).
         self.yellow_phase_time = min([i.duration for i in self.eng.trafficlight.getAllProgramLogics(self.id)[0].phases])
+        yellow_override = getattr(world, 'yellow_length_override', None)
+        if yellow_override is not None:
+            self.yellow_phase_time = float(yellow_override)
         self.map_name = world.map  # TODO: try to add it to Registry later
 
         self.lanelinks = world.eng.trafficlight.getControlledLinks(self.id)
@@ -387,6 +396,25 @@ class World(object):
         else:
             sumo_cmd += ['-c', os.path.join(sumo_dict['dir'], sumo_dict['combined_file']),
                          '--no-warnings', str(sumo_dict['no_warning'])]
+        # Protocol knobs other studies set explicitly and this repo has always
+        # left at SUMO's default. Both are opt-in: with neither passed the
+        # command line is byte-identical to every run made before they existed.
+        #
+        # --time-to-teleport matters more than it looks. SUMO's default is 300s,
+        # so that is what every result here was produced under; RESCO-derived
+        # work disables it (Unicorn's parameters.py: "-1 for RESCO dataset").
+        # Teleporting removes a stuck vehicle, which moves BOTH the mean travel
+        # time and the completed-vehicle count, i.e. exactly the survivorship
+        # axis that section 6.2 (s-2) turns on.
+        try:
+            command_param = Registry.mapping['command_mapping']['setting'].param
+        except (KeyError, AttributeError):
+            command_param = {}
+        teleport_time = command_param.get('sumo_teleport_time', None)
+        if teleport_time is not None:
+            sumo_cmd += ['--time-to-teleport', str(teleport_time)]
+        self.yellow_length_override = command_param.get('sumo_yellow_length', None)
+
         self.net = os.path.join(sumo_dict['dir'], sumo_dict['roadnetFile'])
         self.route = os.path.join(sumo_dict['dir'], sumo_dict['flowFile'])
         self.sumo_cmd = sumo_cmd
