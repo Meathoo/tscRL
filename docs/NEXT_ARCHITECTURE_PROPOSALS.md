@@ -21,6 +21,39 @@
 
 ---
 
+## 0.1 實作狀態（分支 `edge-and-prototype-hypernet`）
+
+| 方案 | 狀態 | 依據 |
+|---|---|---|
+| **A** Relational | **已停止** | kill test 未通過（§4.4.1）。`scripts/edge_contract_stats.py` |
+| **B** Regime Mixer | 未開工 | — |
+| **C** K-Prototype | **已實作，實驗執行中** | `agent/hypernetwork.py` 的 `PrototypeHyperNetwork`；18 個新測試 |
+
+C 的三個驗證（全部通過）：
+
+- `hyper_prototypes: 0` 不建構任何東西，預設路徑**逐位元不變**：
+  cityflow4x4 / structural / seed 0 重現 `q_loss 0.0031771005579718835`、
+  `travel 1592.0815`、`throughput 817`（與 PROGRESS (t-4) 的參考值相同）。
+- `K=1` 生成的參數在各路口之間的離散度**恰好是 0.0**——它在建構上就是 `constmeta`，
+  不是量出來像。所以 K 掃描的低端**必須**重現 (q) 的失敗。
+- `K=0` 回傳未包裝的 head，參數量 445,640，與壓縮文件 §6 的 checkpoint 實測值相同。
+
+第四個測試釘住一個**這個方案逃不掉的限制**：常數 meta 在任何 K 下都會塌成一份權重。
+CityFlow 格網的 12 維結構契約有 10 維是常數 ⇒ **C 在格網上被預測為 null**，
+理由與 F1／F2 完全相同。能分開的網路是 Ingolstadt21。
+
+執行中的矩陣（`scripts/prototype_study.sh`）：
+
+| 機器 | 路網 | Arms | seeds |
+|---|---|---|---|
+| `.237`（16 核，`tscrl_transfer`） | `sumo1x21` | `k0` `k1` `k8` `k8f` | 0/1/2 |
+| local（12 核，`tscRL`） | `cityflow4x4_hetero` | `k0` `k8` | 0/1/2 |
+
+兩張表各自在單一機器上跑完（F11）。`k2`/`k4`/`k16`/`k21` 等 K 曲線的其餘點，
+等 `k8` 顯示有沒有東西可填再跑。
+
+---
+
 ## 1. Baseline 盤點（維度與資料流）
 
 ### 1.1 目前主線
