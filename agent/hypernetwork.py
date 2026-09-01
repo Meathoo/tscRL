@@ -696,6 +696,125 @@ class ChunkedHyperNetwork(nn.Module):
         return torch.cat(chunks, dim=-1)
 
 
+class PrototypeHyperNetwork(nn.Module):
+    """K-prototype factorization of any generator head.
+
+    Every conditioning result in this study has been read off one of two
+    cardinalities. ``learned`` gives each intersection its own free code, which
+    is a per-index table and therefore cannot cross a network. ``constmeta``
+    gives every intersection the same code, and (q) measured that losing to a
+    plain shared MLP by 61.7 s on Ingolstadt21 -- generating N copies of one
+    policy is a redundant parameterization of a shared one. Nothing between the
+    two has been run, and (q)'s own diagnosis of why constmeta fails is exactly
+    an argument for the middle.
+
+    So: K learned prototype codes, and each intersection's parameters are a
+    convex combination of the K generated parameter sets,
+
+        theta_i = sum_k alpha_ik * inner(p_k),   alpha_i = softmax(gate(meta_i) / T)
+
+    The generator sees only the K codes, never the meta, so it runs K times per
+    forward instead of once per (batch element, agent). p_k and the gate are
+    both shaped independently of N, so the whole path still transfers.
+
+    The two endpoints reproduce the two known results, which is what makes this
+    checkable: K=1 is constmeta by construction, and K=N with a one-hot gate is
+    the same function class as learned.
+    """
+
+    def __init__(self, inner, input_dim, output_dim, num_prototypes,
+                 gate_hidden=64, temperature=1.0, gate_frozen=False):
+        super().__init__()
+        if num_prototypes < 1:
+            raise ValueError('num_prototypes must be >= 1')
+        self.inner = inner
+        self.input_dim = int(input_dim)
+        self.output_dim = int(output_dim)
+        self.num_prototypes = int(num_prototypes)
+
+        self.prototypes = nn.Parameter(torch.empty(self.num_prototypes, self.input_dim))
+        # Orthogonal rows so the K codes do not start near each other; two codes
+        # that begin close generate near-identical parameters and collapse
+        # together before the gate has learned to tell them apart.
+        nn.init.orthogonal_(self.prototypes, gain=1.0)
+
+        gate_hidden = int(gate_hidden)
+        if gate_hidden > 0:
+            self.gate = nn.Sequential(
+                nn.Linear(self.input_dim, gate_hidden),
+                nn.ReLU(),
+                nn.Linear(gate_hidden, self.num_prototypes),
+            )
+        else:
+            self.gate = nn.Sequential(nn.Linear(self.input_dim, self.num_prototypes))
+        if gate_frozen:
+            # The C3 control: a fixed random partition. Answers whether the win
+            # is "K sets of weights" (capacity) or "structurally similar
+            # intersections sharing a policy" (the actual hypothesis).
+            for param in self.gate.parameters():
+                param.requires_grad_(False)
+        self.gate_frozen = bool(gate_frozen)
+
+        # A buffer, not an attribute, so an annealed temperature is carried by
+        # the checkpoint and a resumed run does not silently restart the anneal.
+        self.register_buffer('temperature', torch.tensor(float(temperature)))
+        self.register_buffer('usage', torch.zeros(self.num_prototypes))
+
+    def set_temperature(self, value):
+        with torch.no_grad():
+            self.temperature.fill_(max(1e-3, float(value)))
+
+    def mixing_weights(self, meta):
+        logits = self.gate(meta)
+        return torch.softmax(logits / self.temperature.clamp_min(1e-3), dim=-1)
+
+    def forward(self, meta):
+        # [K, output_dim] -- independent of batch size and of agent count, which
+        # is the whole compute argument: the flat head emits one parameter set
+        # per (batch element, agent) and uses each exactly once.
+        deltas = self.inner(self.prototypes)
+        alpha = self.mixing_weights(meta)
+        if self.training:
+            with torch.no_grad():
+                flat = alpha.reshape(-1, self.num_prototypes)
+                self.usage.mul_(0.99).add_(0.01 * flat.mean(dim=0))
+        return alpha @ deltas
+
+    def diagnostics(self):
+        """Prototype occupancy. Collapse to one active prototype means this has
+        silently become constmeta, which (q) showed is worse than no
+        hypernetwork at all -- so it has to be visible in the log."""
+        usage = self.usage.detach()
+        total = usage.sum().clamp_min(1e-8)
+        share = usage / total
+        entropy = -(share * share.clamp_min(1e-8).log()).sum()
+        return {
+            'proto_active': float((share > 0.01).sum().item()),
+            'proto_entropy': float(entropy.item()),
+            'proto_max_share': float(share.max().item()),
+            'proto_temperature': float(self.temperature.item()),
+        }
+
+    @torch.no_grad()
+    def reinit_dead(self, threshold=0.01):
+        """Re-draw prototypes no intersection is using.
+
+        A dead prototype receives no gradient through ``alpha @ deltas``, so it
+        stays dead once it gets there; K then quietly falls below the K being
+        reported. Re-drawing keeps the arm honest about its own cardinality.
+        """
+        usage = self.usage
+        share = usage / usage.sum().clamp_min(1e-8)
+        dead = (share <= threshold).nonzero(as_tuple=True)[0]
+        if dead.numel() == 0 or dead.numel() == self.num_prototypes:
+            return 0
+        fresh = torch.empty(dead.numel(), self.input_dim, device=self.prototypes.device)
+        nn.init.orthogonal_(fresh, gain=1.0)
+        self.prototypes[dead] = fresh
+        self.usage[dead] = usage.mean()
+        return int(dead.numel())
+
+
 class HyperNetwork(MLPHyperNetwork):
     """
     Backward-compatible name for the original MLP hypernetwork.
@@ -720,16 +839,47 @@ def build_hypernetwork(
     chunk_embed_dim=16,
     chunk_generator_hidden=0,
     chunk_rf_mode='shared',
+    num_prototypes=0,
+    prototype_gate_hidden=64,
+    prototype_temperature=1.0,
+    prototype_gate_frozen=False,
 ):
     """
     Build a linear or MLP hypernetwork from config.
 
     ``chunk_*`` arguments only reach the chunked head; the other head modes
     ignore them the way they always have.
+
+    ``num_prototypes`` of 0 returns the head unchanged and constructs nothing,
+    so every existing configuration keeps its exact parameter initialization
+    order and stays byte-reproducible. A positive value wraps whichever head
+    was selected in the K-prototype factorization, which is orthogonal to the
+    head mode -- flat, layerwise and chunked can each be factorized.
     """
 
     kind = str(hypernet_type or 'mlp').lower()
     mode = str(head_mode or 'flat').lower()
+
+    if num_prototypes and int(num_prototypes) > 0:
+        inner = build_hypernetwork(
+            hypernet_type, input_dim, hidden_dims, output_dim,
+            dropout=dropout, target_layout=target_layout, head_mode=head_mode,
+            use_bias=use_bias, head_init_gain=head_init_gain, rf_init=rf_init,
+            rf_mode=rf_mode, rf_hidden_gain=rf_hidden_gain,
+            rf_output_gain=rf_output_gain, chunk_size=chunk_size,
+            chunk_embed_dim=chunk_embed_dim,
+            chunk_generator_hidden=chunk_generator_hidden,
+            chunk_rf_mode=chunk_rf_mode,
+        )
+        return PrototypeHyperNetwork(
+            inner,
+            input_dim,
+            output_dim,
+            int(num_prototypes),
+            gate_hidden=prototype_gate_hidden,
+            temperature=prototype_temperature,
+            gate_frozen=prototype_gate_frozen,
+        )
     if mode in ('chunked', 'chunk', 'factorized'):
         return ChunkedHyperNetwork(
             input_dim,

@@ -187,6 +187,12 @@ def build_config(args):
         'hyper_critic_chunk_size': getattr(args, 'hyper_critic_chunk_size', None),
         'hyper_chunk_generator_hidden': getattr(args, 'hyper_chunk_generator_hidden', None),
         'hyper_chunk_rf_mode': getattr(args, 'hyper_chunk_rf_mode', None),
+        'hyper_prototypes': getattr(args, 'hyper_prototypes', None),
+        'hyper_prototype_gate_hidden': getattr(args, 'hyper_prototype_gate_hidden', None),
+        'hyper_prototype_temperature': getattr(args, 'hyper_prototype_temperature', None),
+        'hyper_prototype_temperature_final': getattr(
+            args, 'hyper_prototype_temperature_final', None),
+        'hyper_prototype_gate_frozen': getattr(args, 'hyper_prototype_gate_frozen', None),
         'agent_embedding_dim': getattr(args, 'agent_embedding_dim', None),
         'gamma': getattr(args, 'gamma', None),
         'ppo_rollout_steps': getattr(args, 'ppo_rollout_steps', None),

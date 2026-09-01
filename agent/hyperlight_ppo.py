@@ -15,6 +15,7 @@ from .actor import BaseActor
 from .hyperlight_architecture import DirectedGraphCritic, MovementTokenEncoder
 from .iru import IRUNetwork
 from .hypernetwork import (
+    PrototypeHyperNetwork,
     build_generated_param_init_config,
     build_hypernetwork,
 )
@@ -211,6 +212,20 @@ class HyperLightPPOAgent(RLAgent):
             cfg.get('critic_hypernet_type', self.hypernet_type),
         )
         self.hyper_head_mode = str(cfg.get('hyper_head_mode', 'layerwise')).lower()
+        # K-prototype factorization (docs/NEXT_ARCHITECTURE_PROPOSALS.md sec 6).
+        # 0 keeps every existing arm constructing exactly what it constructed
+        # before. K=1 is constmeta by construction; the learned embedding mode
+        # is the K=N end of the same axis.
+        self.hyper_prototypes = int(cfg.get('hyper_prototypes', 0))
+        self.hyper_prototype_gate_hidden = int(cfg.get('hyper_prototype_gate_hidden', 64))
+        self.hyper_prototype_temperature = float(cfg.get('hyper_prototype_temperature', 2.0))
+        self.hyper_prototype_temperature_final = float(
+            cfg.get('hyper_prototype_temperature_final', 0.5)
+        )
+        self.hyper_prototype_gate_frozen = bool(cfg.get('hyper_prototype_gate_frozen', False))
+        self.hyper_prototype_reinit_dead = bool(cfg.get('hyper_prototype_reinit_dead', True))
+        if self.hyper_prototypes < 0:
+            raise ValueError('hyper_prototypes must be >= 0')
         self.hyper_use_bias = bool(cfg.get('hyper_use_bias', True))
         self.hyper_head_init_gain = float(cfg.get('hyper_head_init_gain', 1.0))
         self.hyper_chunk_size = int(cfg.get('hyper_chunk_size', 8))
@@ -270,6 +285,14 @@ class HyperLightPPOAgent(RLAgent):
         self.hyper_film_init_zero = bool(cfg.get('hyper_film_init_zero', True))
         if self.hyper_film_scale < 0.0:
             raise ValueError('hyper_film_scale must be non-negative')
+        if self.hyper_prototypes and 'film' in (
+            self.hyper_adapter_mode, self.hyper_critic_adapter_mode
+        ):
+            # FiLM reads the head output as modulation parameters and zero-inits
+            # its last linear; with the wrapper in place that zeroing would land
+            # on the gate instead of the generator. Refuse rather than silently
+            # zero the wrong layer -- and FiLM is a falsified arm anyway (F5).
+            raise ValueError('hyper_prototypes cannot be combined with adapter_mode=film')
         self.hyper_residual = bool(cfg.get('hyper_residual', cfg.get('hyper_residual_enabled', False)))
         self.hyper_residual_mode = str(cfg.get('hyper_residual_mode', 'full')).lower()
         if self.hyper_residual_mode in ('low_rank', 'low-rank'):
@@ -724,6 +747,10 @@ class HyperLightPPOAgent(RLAgent):
                 chunk_size=self.hyper_actor_chunk_size,
                 chunk_embed_dim=self.hyper_chunk_embed_dim,
                 chunk_generator_hidden=self.hyper_chunk_generator_hidden,
+                num_prototypes=self.hyper_prototypes,
+                prototype_gate_hidden=self.hyper_prototype_gate_hidden,
+                prototype_temperature=self.hyper_prototype_temperature,
+                prototype_gate_frozen=self.hyper_prototype_gate_frozen,
                 **self.actor_rf_init_config,
             ).to(self.device)
         if self.hyper_adapter_mode == 'film' and self.hyper_film_init_zero:
@@ -812,6 +839,10 @@ class HyperLightPPOAgent(RLAgent):
                 chunk_size=self.hyper_critic_chunk_size,
                 chunk_embed_dim=self.hyper_chunk_embed_dim,
                 chunk_generator_hidden=self.hyper_chunk_generator_hidden,
+                num_prototypes=self.hyper_prototypes,
+                prototype_gate_hidden=self.hyper_prototype_gate_hidden,
+                prototype_temperature=self.hyper_prototype_temperature,
+                prototype_gate_frozen=self.hyper_prototype_gate_frozen,
                 **self.value_rf_init_config,
             ).to(self.device)
             if (
@@ -917,6 +948,14 @@ class HyperLightPPOAgent(RLAgent):
             else 'local'
         )
         value_arch = 'directed_graph' if self.graph_critic_enabled else self.value_hypernet_type
+        prototypes = str(self.hyper_prototypes)
+        if self.hyper_prototypes:
+            prototypes += '@T%g->%g' % (
+                self.hyper_prototype_temperature,
+                self.hyper_prototype_temperature_final,
+            )
+            if self.hyper_prototype_gate_frozen:
+                prototypes += '/frozen'
         return (
             f"HyperLightPPOAgent(sub_agents={self.sub_agents}, state_dim={self.state_dim}, "
             f"policy_input_dim={self.policy_input_dim}, action_dim={self.action_space.n}, "
@@ -927,6 +966,7 @@ class HyperLightPPOAgent(RLAgent):
             f"chunk={self.hyper_actor_chunk_size}:{self.hyper_critic_chunk_size}"
             f"/{self.hyper_chunk_embed_dim}/g{self.hyper_chunk_generator_hidden}"
             f"/{self.actor_rf_init_config['chunk_rf_mode']}, "
+            f"prototypes={prototypes}, "
             f"objective={self.policy_objective}, "
             f"embedding={self.embedding_mode}, topology={self.topology_aware_embedding}, "
             f"dynamic={self.dynamic_enabled}"
@@ -3146,6 +3186,37 @@ class HyperLightPPOAgent(RLAgent):
             return {}
         return self._mean_diagnostics(self._residual_episode_diagnostics)
 
+    def _prototype_heads(self):
+        heads = []
+        for head in (self.actor_hypernet, self.value_hypernet):
+            if isinstance(head, PrototypeHyperNetwork):
+                heads.append(head)
+        return heads
+
+    def _apply_prototype_schedule(self):
+        """Anneal the gate temperature, and re-draw prototypes nobody uses.
+
+        The gate starts hot so every prototype receives gradient -- a
+        mixture-of-experts whose gate sharpens too early collapses onto
+        whichever expert happened to win first, and a collapsed K-prototype
+        head is constmeta, which (q) measured losing to no hypernetwork at all.
+        """
+        heads = self._prototype_heads()
+        if not heads:
+            return
+        progress = min(1.0, self._updates_done / float(self.total_updates))
+        start = self.hyper_prototype_temperature
+        final = self.hyper_prototype_temperature_final
+        temperature = start + (final - start) * progress
+        for head in heads:
+            head.set_temperature(temperature)
+            # Only while the gate is still hot enough to recover: re-drawing a
+            # prototype late in training would inject an untrained parameter set
+            # into a converged policy.
+            if self.hyper_prototype_reinit_dead and progress < 0.5:
+                if self._updates_done % 50 == 0:
+                    head.reinit_dead()
+
     def _anneal_factor(self, final_frac):
         """Linear decay from 1.0 to ``final_frac`` across the planned updates."""
         progress = min(1.0, self._updates_done / float(self.total_updates))
@@ -3160,6 +3231,7 @@ class HyperLightPPOAgent(RLAgent):
         seeds ``_updates_done``).
         """
         self._updates_done += 1
+        self._apply_prototype_schedule()
         if self.lr_anneal == 'linear':
             lr = self.base_learning_rate * self._anneal_factor(self.lr_final_frac)
             for group in self.optimizer.param_groups:
@@ -3170,9 +3242,15 @@ class HyperLightPPOAgent(RLAgent):
 
     def current_schedule(self):
         """Where the schedules stand, for the per-episode log."""
+        prototype = {}
+        heads = self._prototype_heads()
+        if heads:
+            # Actor head only: the two agree on temperature, and reporting both
+            # would double every prototype line in the log.
+            prototype = heads[0].diagnostics()
         if self.lr_anneal == 'none' and self.entropy_anneal == 'none':
-            return {}
-        return {
+            return prototype
+        schedule = {
             'lr': float(self.optimizer.param_groups[0]['lr']),
             'entropy_coef': float(
                 self.entropy_coef * self._anneal_factor(self.entropy_final_frac)
@@ -3181,6 +3259,8 @@ class HyperLightPPOAgent(RLAgent):
             ),
             'progress': min(1.0, self._updates_done / float(self.total_updates)),
         }
+        schedule.update(prototype)
+        return schedule
 
     def train(self):
         if self._transitions_since_update < self.ppo_rollout_steps:
@@ -3441,6 +3521,14 @@ class HyperLightPPOAgent(RLAgent):
             ),
             'value_hypernet_type': str(self.value_hypernet_type),
             'hyper_head_mode': self.hyper_head_mode,
+            # None on the default path, so checkpoints predating the prototype
+            # head still validate. A factorized run records K and the gate, and
+            # correctly refuses a checkpoint generated at a different K: the
+            # prototype table is [K, meta_dim] and does not reshape.
+            'hyper_prototypes': self.hyper_prototypes or None,
+            'hyper_prototype_gate_frozen': (
+                True if self.hyper_prototypes and self.hyper_prototype_gate_frozen else None
+            ),
             'hyper_actor_chunk_size': int(self.hyper_actor_chunk_size),
             'hyper_critic_chunk_size': int(self.hyper_critic_chunk_size),
             'hyper_chunk_embed_dim': int(self.hyper_chunk_embed_dim),

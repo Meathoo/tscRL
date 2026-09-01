@@ -176,6 +176,31 @@ model:
   #              hyper_chunk_generator_hidden > 0, that width >= n_chunks too.
   hyper_chunk_rf_mode: shared
 
+  # --- K-prototype factorized head (docs/NEXT_ARCHITECTURE_PROPOSALS.md sec 6)
+  # Every conditioning result so far sits at one of two cardinalities: a free
+  # code per intersection (`learned`, an index table that cannot cross a
+  # network) or one code for all of them (`constmeta`, which (q) measured
+  # losing to a plain shared MLP by 61.7s on Ingolstadt21). This is the axis
+  # between them: theta_i is a convex mixture of K generated parameter sets,
+  # with the mixing weights read off the same meta vector the head would have
+  # taken. The generator then runs K times per forward instead of once per
+  # (batch element, agent).
+  #   0  keeps the head exactly as it was and constructs nothing.
+  #   1  is constmeta by construction -- the K=1 end of the sweep must
+  #      reproduce that known failure, or the implementation is wrong.
+  # The gate starts hot and sharpens: a mixture whose gate sharpens early
+  # collapses onto whichever prototype won first, and a collapsed head is
+  # constmeta again. `proto_active` in the episode log is the thing to watch.
+  hyper_prototypes: 0
+  hyper_prototype_gate_hidden: 64
+  hyper_prototype_temperature: 2.0
+  hyper_prototype_temperature_final: 0.5
+  # Freeze the gate at its random initialization: a fixed, arbitrary partition.
+  # Separates "K sets of weights" (capacity) from "intersections that are
+  # structurally alike should share a policy" (the actual hypothesis).
+  hyper_prototype_gate_frozen: False
+  hyper_prototype_reinit_dead: True
+
 # shared base + small hypernetwork residual delta
   # generated: original per-intersection generated MLP weights
   # none: one trainable shared actor (the unmodulated IRU control)

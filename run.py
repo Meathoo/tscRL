@@ -227,6 +227,25 @@ parser.add_argument('--hyper_chunk_rf_mode', type=str, default=None,
                          'generated matrix starts rank-deficient; per_chunk slices a '
                          'full-size init across the chunks via the chunk codes at no '
                          'extra parameter cost (needs hyper_chunk_embed_dim >= n_chunks)')
+parser.add_argument('--hyper_prototypes', type=int, default=None,
+                    help='override model.hyper_prototypes: K in the prototype-factorized '
+                         'head. theta_i becomes a convex mixture of K generated parameter '
+                         'sets, with the mixing weights read off the same meta vector. '
+                         '0 keeps the head unchanged; 1 is constmeta by construction, and '
+                         'the learned embedding mode is the K=N end of the same axis')
+parser.add_argument('--hyper_prototype_gate_hidden', type=int, default=None,
+                    help='override model.hyper_prototype_gate_hidden; 0 uses a single Linear')
+parser.add_argument('--hyper_prototype_temperature', type=float, default=None,
+                    help='override model.hyper_prototype_temperature (gate softmax '
+                         'temperature at the start of training)')
+parser.add_argument('--hyper_prototype_temperature_final', type=float, default=None,
+                    help='override model.hyper_prototype_temperature_final; the gate '
+                         'sharpens linearly to this across the planned update count')
+parser.add_argument('--hyper_prototype_gate_frozen', type=str2bool, nargs='?', const=True,
+                    default=None,
+                    help='override model.hyper_prototype_gate_frozen; freezes the gate at '
+                         'its random init, giving a fixed arbitrary partition. Separates '
+                         '"K sets of weights" from "alike intersections share a policy"')
 parser.add_argument('--hyper_hidden', type=str, default=None,
                     help='override model.hyper_hidden, e.g. "256" or "128,64"')
 parser.add_argument('--value_hyper_hidden', type=str, default=None,
