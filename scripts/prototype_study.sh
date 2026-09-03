@@ -83,6 +83,27 @@ config_args() {
         # K=N on Ingolstadt21, for the far end of the axis. Not a substitute for
         # the `learned` arm: this keeps the structural meta and only widens K.
         k21)  echo "$BASE_ARGS --hyper_prototypes 21" ;;
+
+        # --- proposal B: credit assignment (agent/mixer.py) -----------------
+        # These use hyperlight_ppo, not hyperlight_mappo: the mixer requires a
+        # local V_i because it *is* the centralization. Their objective is the
+        # joint return, so they are comparable with each other and with nothing
+        # else in this table -- `bu` is the control the other two are read
+        # against, not the current baseline.
+        bu)   echo "$BASE_ARGS --mixer_mode uniform" ;;
+        b8)   echo "$BASE_ARGS --mixer_mode regime --mixer_regimes 8" ;;
+        # The arm that tests whether quantization is what separates this from
+        # the harmful continuous conditioning measured in (h).
+        b8c)  echo "$BASE_ARGS --mixer_mode regime --mixer_regimes 8 --mixer_quantize False" ;;
+        # Regime code held constant: does the regime's *content* matter, or
+        # only that the mixer is non-uniform. The (q)/k8f question, on B.
+        b1)   echo "$BASE_ARGS --mixer_mode regime --mixer_regimes 1" ;;
+
+        # --- the conditioning-input control (agent_embedding_mode=frozen) ---
+        # learned's cardinality and index table, codes never trained. Reads
+        # against `learned` and `k0`/`struct` on this same network.
+        frz)  echo "--agent_embedding_mode frozen" ;;
+        lrn)  echo "--agent_embedding_mode learned" ;;
         *)    echo "__UNKNOWN__" ;;
     esac
 }
@@ -122,10 +143,21 @@ job_prefix() {
     echo "proto_$1_${NETWORK}_seed$2"
 }
 
+# The mixer arms need centralized_critic False, which is hyperlight_ppo's
+# default and hyperlight_mappo's opposite. Selecting the agent from the tag
+# keeps that from being a thing anyone has to remember at the command line.
+agent_for() {
+    case "$1" in
+        bu|b8|b8c|b1) echo "hyperlight_ppo" ;;
+        *)            echo "$AGENT" ;;
+    esac
+}
+
 run_job() {
     local tag="$1" seed="$2"
-    local extra
+    local extra agent
     extra="$(config_args "$tag")"
+    agent="$(agent_for "$tag")"
     if [ "$extra" = "__UNKNOWN__" ]; then
         echo "unknown tag: $tag" >&2
         return 2
@@ -135,7 +167,7 @@ run_job() {
     prefix="$(job_prefix "$tag" "$seed")"
     local dir
     dir="$(prepare_workdir "$prefix")"
-    local model_dir="$dir/data/output_data/tsc/${WORLD}_${AGENT}/${NETWORK}/${prefix}/model"
+    local model_dir="$dir/data/output_data/tsc/${WORLD}_${agent}/${NETWORK}/${prefix}/model"
     local log_file="$dir/_proto_${prefix}.log"
     mkdir -p "$STAMP_DIR"
 
@@ -158,7 +190,7 @@ run_job() {
             echo "[$(date '+%F %T')] attempt $attempt: starting $prefix from scratch ($extra)" | tee -a "$log_file"
         fi
 
-        ( cd "$dir" && python3 run.py --task tsc --agent "$AGENT" --world "$WORLD" \
+        ( cd "$dir" && python3 run.py --task tsc --agent "$agent" --world "$WORLD" \
             --network "$NETWORK" --prefix "$prefix" --seed "$seed" \
             --episodes "$EPISODES" --save_rate "$SAVE_RATE" \
             --thread_num "$THREAD_NUM" \
@@ -215,7 +247,8 @@ case "$MODE" in
         for tag in $TAGS; do
             for seed in $SEEDS; do
                 prefix="$(job_prefix "$tag" "$seed")"
-                model_dir="$WORKROOT/$prefix/data/output_data/tsc/${WORLD}_${AGENT}/${NETWORK}/${prefix}/model"
+                agent="$(agent_for "$tag")"
+                model_dir="$WORKROOT/$prefix/data/output_data/tsc/${WORLD}_${agent}/${NETWORK}/${prefix}/model"
                 echo "$prefix: episode $(latest_checkpoint "$model_dir" || echo none)/$EPISODES"
             done
         done
