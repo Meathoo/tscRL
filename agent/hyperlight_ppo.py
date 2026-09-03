@@ -19,6 +19,7 @@ from .hypernetwork import (
     build_generated_param_init_config,
     build_hypernetwork,
 )
+from .mixer import RegimeMixer, UniformMixer
 from .rl_agent import RLAgent
 from . import utils
 from common.registry import Registry
@@ -216,6 +217,22 @@ class HyperLightPPOAgent(RLAgent):
         # 0 keeps every existing arm constructing exactly what it constructed
         # before. K=1 is constmeta by construction; the learned embedding mode
         # is the K=N end of the same axis.
+        # Regime-quantized credit assignment (agent/mixer.py). `none` leaves the
+        # per-agent PPO objective exactly as it is; the other two replace it
+        # with a joint objective decomposed by the mixer, which is a different
+        # target and therefore not comparable with any pre-existing number.
+        self.mixer_mode = str(cfg.get('mixer_mode', 'none')).lower()
+        if self.mixer_mode not in ('none', 'uniform', 'regime'):
+            raise ValueError(f"Unknown mixer_mode: {self.mixer_mode}")
+        self.mixer_enabled = self.mixer_mode != 'none'
+        self.mixer_regimes = int(cfg.get('mixer_regimes', 8))
+        self.mixer_z_dim = int(cfg.get('mixer_z_dim', 32))
+        self.mixer_hidden = int(cfg.get('mixer_hidden', 64))
+        self.mixer_quantize = bool(cfg.get('mixer_quantize', True))
+        self.mixer_commitment = float(cfg.get('mixer_commitment', 0.25))
+        self.mixer_vq_coef = float(cfg.get('mixer_vq_coef', 0.25))
+        self.mixer_vq_warmup = int(cfg.get('mixer_vq_warmup', 20))
+        self.mixer_reinit_dead = bool(cfg.get('mixer_reinit_dead', True))
         self.hyper_prototypes = int(cfg.get('hyper_prototypes', 0))
         self.hyper_prototype_gate_hidden = int(cfg.get('hyper_prototype_gate_hidden', 64))
         self.hyper_prototype_temperature = float(cfg.get('hyper_prototype_temperature', 2.0))
@@ -469,6 +486,24 @@ class HyperLightPPOAgent(RLAgent):
             # index table.  Those are separable and this arm separates them.
             self.embedding_mode = 'constant'
             self.topology_aware_embedding = True
+        elif raw_embedding_mode in ('frozen', 'frozen_random'):
+            # Control arm for "why is `learned` worse?". It has learned's exact
+            # cardinality -- one free code per intersection, same shape, same
+            # index table -- but the codes are drawn once and never trained.
+            #
+            # The question it settles: on Ingolstadt21 `struct` beats `learned`
+            # by 54s, yet a frozen *random* 8-way partition of the prototype
+            # head (k8f) tied `struct`. Those two facts are only consistent if
+            # what hurts `learned` is that its codes have to be learned from
+            # the RL signal, not that they are per-intersection. If this arm
+            # lands near `struct`, that is the answer and the index-table
+            # reading of (l)/(t-2) needs rewriting; if it lands near `learned`,
+            # cardinality is the story after all.
+            # topology_aware_embedding is deliberately left at its config value
+            # (False by default), exactly as `learned` leaves it: adding the
+            # topology encoder here would feed structure back in and the arm
+            # would stop being a control against `learned`.
+            self.embedding_mode = 'frozen'
         elif raw_embedding_mode in ('structural', 'structural_only'):
             # Transfer mode: the meta vector is produced *only* from
             # network-independent structural features, so it carries no
@@ -487,6 +522,14 @@ class HyperLightPPOAgent(RLAgent):
         elif self.embedding_mode == 'one_hot':
             self.agent_embeddings = torch.eye(self.sub_agents, dtype=torch.float32, device=self.device)
             self.meta_dim = self.sub_agents
+        elif self.embedding_mode == 'frozen':
+            # Same shape and same orthogonal draw `learned` gets -- a plain
+            # tensor rather than a Parameter, so it never receives a gradient.
+            embedding_dim = int(cfg.get('agent_embedding_dim', min(64, self.sub_agents)))
+            frozen = torch.empty(self.sub_agents, embedding_dim, device=self.device)
+            nn.init.orthogonal_(frozen)
+            self.agent_embeddings = frozen
+            self.meta_dim = embedding_dim
         elif self.embedding_mode in ('structural', 'constant'):
             self.agent_embeddings = None
             self.meta_dim = int(cfg.get('agent_embedding_dim', 64))
@@ -851,6 +894,29 @@ class HyperLightPPOAgent(RLAgent):
             ):
                 self._zero_last_linear(self.value_hypernet)
 
+        self.mixer = None
+        if self.mixer_enabled:
+            if self.centralized_critic:
+                # The mixer carries the global information; leaving the pooled
+                # summary on the value input too would feed it in twice and make
+                # "what the mixer contributes" unanswerable.
+                raise ValueError(
+                    'mixer_mode requires centralized_critic: False -- the mixer '
+                    'is the centralization, and V_i has to stay local'
+                )
+            if self.mixer_mode == 'uniform':
+                self.mixer = UniformMixer().to(self.device)
+            else:
+                self.mixer = RegimeMixer(
+                    self.state_dim,
+                    self.meta_dim,
+                    num_regimes=self.mixer_regimes,
+                    z_dim=self.mixer_z_dim,
+                    hidden=self.mixer_hidden,
+                    commitment=self.mixer_commitment,
+                    quantize=self.mixer_quantize,
+                ).to(self.device)
+
         optimizer_params = self._optimizer_parameters()
         self.base_learning_rate = float(cfg.get('learning_rate', 3e-4))
         self.optimizer = optim.Adam(
@@ -948,6 +1014,10 @@ class HyperLightPPOAgent(RLAgent):
             else 'local'
         )
         value_arch = 'directed_graph' if self.graph_critic_enabled else self.value_hypernet_type
+        mixer_detail = ''
+        if self.mixer_enabled and self.mixer_mode == 'regime':
+            mixer_detail = '@K%d%s' % (
+                self.mixer_regimes, '' if self.mixer_quantize else '/cont')
         prototypes = str(self.hyper_prototypes)
         if self.hyper_prototypes:
             prototypes += '@T%g->%g' % (
@@ -967,6 +1037,7 @@ class HyperLightPPOAgent(RLAgent):
             f"/{self.hyper_chunk_embed_dim}/g{self.hyper_chunk_generator_hidden}"
             f"/{self.actor_rf_init_config['chunk_rf_mode']}, "
             f"prototypes={prototypes}, "
+            f"mixer={self.mixer_mode}{'' if not self.mixer_enabled else mixer_detail}, "
             f"objective={self.policy_objective}, "
             f"embedding={self.embedding_mode}, topology={self.topology_aware_embedding}, "
             f"dynamic={self.dynamic_enabled}"
@@ -3080,6 +3151,65 @@ class HyperLightPPOAgent(RLAgent):
             advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
         return advantages.detach(), returns.detach()
 
+    def _mixer_cond(self):
+        """Per-agent conditioning for the mixing weights: the same meta vector
+        the hypernetwork is given, so the mixer inherits whatever conditioning
+        mode the run selected instead of introducing a second contract."""
+        return self._agent_meta(1)[0]
+
+    def _mixer_terms(self, state, values):
+        """V_tot and the per-agent credit weights for one batch of states."""
+        weights, bias, vq_loss = self.mixer(state, self._mixer_cond())
+        v_tot = (weights * values).sum(dim=-1) + bias
+        return weights, v_tot, vq_loss
+
+    def _compute_mixed_gae(self, rewards, dones, old_values, next_states, state_t):
+        """GAE on the joint return, then split back out by the mixer's gradient.
+
+        ``train()`` runs once per rollout and the parameters have not moved
+        since that rollout was collected, so recomputing the weights here
+        reproduces the ones that were in force during it -- which is why the
+        rollout buffer does not have to carry them.
+
+        A_i = dV_tot/dV_i * A_tot = w_i * A_tot is exact rather than an
+        approximation, because V_tot is linear in V_i by construction. The
+        monotonicity constraint keeps every w_i positive, so no agent's
+        advantage is sign-flipped relative to the joint one.
+        """
+        with torch.no_grad():
+            old_w, old_v_tot, _ = self._mixer_terms(state_t, old_values)
+
+            _, last_values = self._policy_value(next_states[-1:].detach(), deterministic_cos=True)
+            _, last_v_tot, _ = self._mixer_terms(next_states[-1:].detach(), last_values)
+            last_v_tot = last_v_tot.squeeze(0)
+
+            # The joint objective: system-wide queue, not each agent's own.
+            reward_tot = rewards.sum(dim=-1)
+            done_tot = dones[:, 0]
+
+            advantages = torch.zeros_like(reward_tot)
+            last_gae = torch.zeros((), dtype=torch.float32, device=self.device)
+            for step in reversed(range(reward_tot.shape[0])):
+                next_nonterminal = 1.0 - done_tot[step]
+                next_value = (
+                    last_v_tot if step == reward_tot.shape[0] - 1 else old_v_tot[step + 1]
+                )
+                delta = (
+                    reward_tot[step]
+                    + self.gamma * next_value * next_nonterminal
+                    - old_v_tot[step]
+                )
+                last_gae = delta + self.gamma * self.gae_lambda * next_nonterminal * last_gae
+                advantages[step] = last_gae
+            returns_tot = advantages + old_v_tot
+
+            if self.normalize_advantage:
+                advantages = (advantages - advantages.mean()) / (
+                    advantages.std(unbiased=False) + 1e-8
+                )
+            per_agent = old_w * advantages.unsqueeze(-1)
+        return per_agent.detach(), returns_tot.detach(), old_v_tot.detach()
+
     def _policy_surrogate_loss(self, new_log_prob, old_log_prob, advantage):
         ratio = torch.exp(new_log_prob - old_log_prob)
         if self.policy_objective == 'spo':
@@ -3186,6 +3316,18 @@ class HyperLightPPOAgent(RLAgent):
             return {}
         return self._mean_diagnostics(self._residual_episode_diagnostics)
 
+    def _mixer_vq_coefficient(self):
+        """Ramp the commitment term in over the first updates.
+
+        Pulling the encoder onto codes that are still random is how a codebook
+        collapses before it has anything to represent, and a collapsed codebook
+        is the `uniform` control under this arm's name.
+        """
+        if self.mixer_vq_warmup <= 0:
+            return self.mixer_vq_coef
+        progress = min(1.0, self._updates_done / float(self.mixer_vq_warmup))
+        return self.mixer_vq_coef * progress
+
     def _prototype_heads(self):
         heads = []
         for head in (self.actor_hypernet, self.value_hypernet):
@@ -3201,6 +3343,13 @@ class HyperLightPPOAgent(RLAgent):
         whichever expert happened to win first, and a collapsed K-prototype
         head is constmeta, which (q) measured losing to no hypernetwork at all.
         """
+        if (
+            self.mixer is not None
+            and self.mixer_reinit_dead
+            and self._updates_done % 50 == 0
+            and self._updates_done < 0.5 * self.total_updates
+        ):
+            self.mixer.reinit_dead()
         heads = self._prototype_heads()
         if not heads:
             return
@@ -3243,6 +3392,8 @@ class HyperLightPPOAgent(RLAgent):
     def current_schedule(self):
         """Where the schedules stand, for the per-episode log."""
         prototype = {}
+        if self.mixer is not None:
+            prototype.update(self.mixer.diagnostics())
         heads = self._prototype_heads()
         if heads:
             # Actor head only: the two agree on temperature, and reporting both
@@ -3286,13 +3437,18 @@ class HyperLightPPOAgent(RLAgent):
             dynamic_t,
             next_dynamic_t,
         ) = self._rollout_tensors(rollout)
-        advantages_t, returns_t = self._compute_gae(
-            reward_t,
-            done_t,
-            old_value_t,
-            next_state_t,
-            next_dynamics=next_dynamic_t if self.dynamic_encoder is not None else None,
-        )
+        if self.mixer_enabled:
+            advantages_t, returns_t, old_value_t = self._compute_mixed_gae(
+                reward_t, done_t, old_value_t, next_state_t, state_t,
+            )
+        else:
+            advantages_t, returns_t = self._compute_gae(
+                reward_t,
+                done_t,
+                old_value_t,
+                next_state_t,
+                next_dynamics=next_dynamic_t if self.dynamic_encoder is not None else None,
+            )
 
         num_steps = state_t.shape[0]
         step_batch_size = max(1, min(num_steps, self.ppo_minibatch_size // max(1, self.sub_agents)))
@@ -3377,6 +3533,13 @@ class HyperLightPPOAgent(RLAgent):
                     policy_loss = policy_loss + self.cos_policy_coef * cos_policy_loss
                     cos_reg_loss = self._cos_regularization_loss(cos_probs)
 
+                vq_loss = None
+                if self.mixer_enabled:
+                    # Regress the joint value, not each agent's own: under the
+                    # mixer V_i is a decomposition of V_tot and has no target
+                    # of its own.
+                    _, values, vq_loss = self._mixer_terms(b_state, values)
+
                 if self.clip_vf is not None and self.clip_vf > 0.0:
                     value_clipped = b_old_value + (values - b_old_value).clamp(-self.clip_vf, self.clip_vf)
                     value_loss = torch.max(
@@ -3388,6 +3551,8 @@ class HyperLightPPOAgent(RLAgent):
                 value_loss = 0.5 * value_loss
 
                 loss = policy_loss + self.value_coef * value_loss - entropy_coef * entropy
+                if vq_loss is not None and self.mixer_vq_coef != 0.0:
+                    loss = loss + self._mixer_vq_coefficient() * vq_loss
                 if self.cos_enabled:
                     loss = loss + cos_reg_loss - self.cos_entropy_coef * cos_entropy
                 if not torch.isfinite(loss):
@@ -3433,6 +3598,8 @@ class HyperLightPPOAgent(RLAgent):
             params.extend(self.topology_encoder.parameters())
         if self.dynamic_encoder is not None:
             params.extend(self.dynamic_encoder.parameters())
+        if self.mixer is not None:
+            params.extend(self.mixer.parameters())
         if self.cos_enabled:
             params.extend(self._cos_parameters())
         unique_params = []
@@ -3525,6 +3692,15 @@ class HyperLightPPOAgent(RLAgent):
             # head still validate. A factorized run records K and the gate, and
             # correctly refuses a checkpoint generated at a different K: the
             # prototype table is [K, meta_dim] and does not reshape.
+            # None on the default path so older checkpoints still validate. A
+            # mixer run records its mode and K, and correctly refuses a
+            # checkpoint from a different one: the objective differs, not just
+            # the weights.
+            'mixer_mode': None if self.mixer_mode == 'none' else self.mixer_mode,
+            'mixer_regimes': self.mixer_regimes if self.mixer_mode == 'regime' else None,
+            'mixer_quantize': (
+                None if self.mixer_mode != 'regime' else bool(self.mixer_quantize)
+            ),
             'hyper_prototypes': self.hyper_prototypes or None,
             'hyper_prototype_gate_frozen': (
                 True if self.hyper_prototypes and self.hyper_prototype_gate_frozen else None
@@ -3661,6 +3837,7 @@ class HyperLightPPOAgent(RLAgent):
             'value_hypernet': (
                 None if self.value_hypernet is None else self.value_hypernet.state_dict()
             ),
+            'mixer': None if self.mixer is None else self.mixer.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'updates_done': int(self._updates_done),
             'architecture_version': 4,
@@ -3716,6 +3893,11 @@ class HyperLightPPOAgent(RLAgent):
             if value_state is None:
                 raise RuntimeError('checkpoint does not contain the configured value hypernetwork')
             self.value_hypernet.load_state_dict(value_state)
+        if self.mixer is not None:
+            mixer_state = checkpoint.get('mixer')
+            if mixer_state is None:
+                raise RuntimeError('checkpoint does not contain the configured mixer')
+            self.mixer.load_state_dict(mixer_state)
         if self.movement_encoder is not None:
             movement_state = checkpoint.get('movement_encoder')
             if movement_state is None:

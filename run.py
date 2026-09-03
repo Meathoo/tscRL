@@ -50,10 +50,14 @@ parser.add_argument(
         'one_hot_topology',
         'structural',
         'constant',
+        'frozen',
     ],
     help='override model.agent_embedding_mode; "structural" drops the '
          'per-intersection index table so the meta vector transfers across '
-         'road networks (see transfer/TRANSFER.md)',
+         'road networks (see transfer/TRANSFER.md). "frozen" is learned\'s '
+         'exact shape and cardinality with the codes never trained, which '
+         'separates "the codes are per-intersection" from "the codes have to '
+         'be learned from the RL signal" as reasons learned underperforms',
 )
 parser.add_argument(
     '--structural_features',
@@ -227,6 +231,21 @@ parser.add_argument('--hyper_chunk_rf_mode', type=str, default=None,
                          'generated matrix starts rank-deficient; per_chunk slices a '
                          'full-size init across the chunks via the chunk codes at no '
                          'extra parameter cost (needs hyper_chunk_embed_dim >= n_chunks)')
+parser.add_argument('--mixer_mode', type=str, default=None,
+                    choices=['none', 'uniform', 'regime'],
+                    help='override model.mixer_mode: replace the per-agent PPO objective '
+                         'with a joint one decomposed by a monotonic mixer '
+                         '(V_tot = sum_i w_i V_i + b, A_i = w_i A_tot). Requires '
+                         'centralized_critic False. `uniform` is the fixed-w control; '
+                         'mixer runs are not comparable with non-mixer numbers')
+parser.add_argument('--mixer_regimes', type=int, default=None,
+                    help='override model.mixer_regimes (K in the quantized regime code)')
+parser.add_argument('--mixer_quantize', type=str2bool, nargs='?', const=True, default=None,
+                    help='override model.mixer_quantize; False keeps the code continuous, '
+                         'which is the arm that tests whether quantization is what '
+                         'separates this from the harmful conditioning measured in (h)')
+parser.add_argument('--mixer_vq_coef', type=float, default=None,
+                    help='override model.mixer_vq_coef')
 parser.add_argument('--hyper_prototypes', type=int, default=None,
                     help='override model.hyper_prototypes: K in the prototype-factorized '
                          'head. theta_i becomes a convex mixture of K generated parameter '

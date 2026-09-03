@@ -191,6 +191,30 @@ model:
   # The gate starts hot and sharpens: a mixture whose gate sharpens early
   # collapses onto whichever prototype won first, and a collapsed head is
   # constmeta again. `proto_active` in the episode log is the thing to watch.
+  # --- regime-quantized credit assignment (agent/mixer.py) -------------------
+  # `none` leaves the per-agent PPO objective untouched and constructs nothing.
+  # `uniform`/`regime` replace it with a joint objective the mixer decomposes:
+  #     V_tot = sum_i w_i * V_i + b,   A_i = w_i * A_tot
+  # That is a DIFFERENT target, so mixer runs are not comparable with any
+  # pre-existing number -- `uniform` is the control they are read against, not
+  # the current baseline. Requires centralized_critic: False, since the mixer
+  # is where the centralization now lives.
+  #
+  # The regime code is quantized to K learned prototypes on purpose: (h)
+  # measured continuous traffic-state conditioning at 110s worse on 7x28, with
+  # a lower loss and a worse reward, which is a policy chasing a moving target.
+  # Quantizing makes the generated weights piecewise constant, and
+  # mixer_quantize: False is the arm that tests whether that is what mattered.
+  mixer_mode: none              # none | uniform | regime
+  mixer_regimes: 8
+  mixer_z_dim: 32
+  mixer_hidden: 64
+  mixer_quantize: True
+  mixer_commitment: 0.25
+  mixer_vq_coef: 0.25
+  mixer_vq_warmup: 20           # updates over which the VQ term ramps in
+  mixer_reinit_dead: True
+
   hyper_prototypes: 0
   hyper_prototype_gate_hidden: 64
   hyper_prototype_temperature: 2.0
