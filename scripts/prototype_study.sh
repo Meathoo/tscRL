@@ -90,6 +90,11 @@ config_args() {
         # joint return, so they are comparable with each other and with nothing
         # else in this table -- `bu` is the control the other two are read
         # against, not the current baseline.
+        # The control that separates "the joint objective hurts" from "losing
+        # the pooled critic hurts": hyperlight_ppo's local critic with the
+        # ordinary per-agent objective and no mixer at all. Without it every
+        # mixer number confounds those two changes.
+        bn)   echo "$BASE_ARGS --mixer_mode none" ;;
         bu)   echo "$BASE_ARGS --mixer_mode uniform" ;;
         b8)   echo "$BASE_ARGS --mixer_mode regime --mixer_regimes 8" ;;
         # The arm that tests whether quantization is what separates this from
@@ -148,7 +153,7 @@ job_prefix() {
 # keeps that from being a thing anyone has to remember at the command line.
 agent_for() {
     case "$1" in
-        bu|b8|b8c|b1) echo "hyperlight_ppo" ;;
+        bn|bu|b8|b8c|b1) echo "hyperlight_ppo" ;;
         *)            echo "$AGENT" ;;
     esac
 }
